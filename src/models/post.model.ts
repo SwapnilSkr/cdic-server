@@ -14,6 +14,7 @@ export interface IPost extends Document {
   viewsCount: number;
   created_at: Date;
   post_url: string; // New field to store Instagram post link
+  flagged: boolean;
 }
 
 // MongoDB Schema & Model
@@ -30,6 +31,7 @@ const postSchema = new Schema<IPost>({
   viewsCount: { type: Number, default: 0 },
   created_at: { type: Date, required: true },
   post_url: { type: String, required: true }, // Store post link
+  flagged: { type: Boolean, default: false },
 });
 
 const Post = mongoose.model<IPost>("Post", postSchema);

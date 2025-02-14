@@ -4,7 +4,7 @@ import Post, { IPost } from "../models/post.model";
 const MAX_POSTS = 100;
 
 /**
- * Fetch and store Instagram posts recursively until MAX_POSTS (10) is reached.
+ * Fetch and store Instagram posts recursively until MAX_POSTS (100) is reached.
  * @param keyword - The hashtag keyword for fetching posts.
  */
 export const fetchAndStoreInstagramPosts = async (
@@ -31,7 +31,6 @@ export const fetchAndStoreInstagramPosts = async (
 
       const data = response.data;
 
-      // Debug log to check response structure
       console.log("📊 Response Data Structure:", {
         hasResponse: !!data.response,
         sectionsCount: data.response?.sections?.length || 0,
@@ -51,7 +50,6 @@ export const fetchAndStoreInstagramPosts = async (
           hasMedias: !!section.layout_content?.medias,
         });
 
-        // Extract media content
         const medias = section.layout_content?.medias || [];
         console.log(`🔍 Found ${medias.length} items in section`);
 
@@ -62,7 +60,6 @@ export const fetchAndStoreInstagramPosts = async (
           const user = media.user || {};
           const caption = media.caption || {};
 
-          // Skip if essential data is missing
           if (!media.code || !user.username) {
             console.log("⚠️ Skipping post due to missing required data");
             continue;
@@ -75,20 +72,10 @@ export const fetchAndStoreInstagramPosts = async (
             : new Date();
 
           const postUrl = `https://www.instagram.com/p/${media.code}/`;
-
-          // Extract first image if available
           const imageUrl = media.image_versions2?.candidates?.[0]?.url || "";
-
-          // Extract first video URL if available
           const videoUrl = media.video_versions?.[0]?.url || "";
-
-          // Extract likes count
           const likesCount = media.like_count || 0;
-
-          // Extract comments count
           const commentsCount = media.comment_count || 0;
-
-          // Extract views count (replaces shares count)
           const viewsCount = media.ig_play_count || media.play_count || 0;
 
           postsData.push(
@@ -101,7 +88,7 @@ export const fetchAndStoreInstagramPosts = async (
               video_url: videoUrl ? videoUrl : "",
               likesCount,
               commentsCount,
-              viewsCount, // ✅ Now extracting and storing views instead of shares
+              viewsCount,
               created_at: postTimestamp,
               post_url: postUrl,
             })
@@ -109,11 +96,9 @@ export const fetchAndStoreInstagramPosts = async (
         }
       }
 
-      // Get next page ID
       nextPageId = data.response?.next_page_id || data.next_page_id || null;
       console.log("📄 Next page ID:", nextPageId);
 
-      // Insert posts into MongoDB
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
@@ -124,13 +109,11 @@ export const fetchAndStoreInstagramPosts = async (
         console.log("⚠️ No new posts found.");
       }
 
-      // Stop fetching if no new posts exist
       if (!foundPosts) {
         console.log("🚀 No more valid posts found. Stopping.");
         break;
       }
 
-      // Stop fetching if no more pages or limit reached
       if (!nextPageId || totalPostsStored >= MAX_POSTS) {
         console.log("🚀 Fetching complete!");
         break;
@@ -142,6 +125,10 @@ export const fetchAndStoreInstagramPosts = async (
   }
 };
 
+/**
+ * Fetch and store YouTube videos recursively until MAX_POSTS (100) is reached.
+ * @param keyword - The search keyword for fetching videos.
+ */
 export const fetchAndStoreYoutubeVideos = async (
   keyword: string
 ): Promise<void> => {
@@ -169,7 +156,6 @@ export const fetchAndStoreYoutubeVideos = async (
         const publishedAt = new Date(video.snippet.publishedAt);
         const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
-        // Get channel details to get profile picture
         const channelResponse = await axios.get(
           `${process.env.YOUTUBE_API_URL}/channels?id=${channelId}&part=snippet&key=${process.env.YOUTUBE_API_KEY}`
         );
@@ -177,7 +163,6 @@ export const fetchAndStoreYoutubeVideos = async (
           channelResponse.data.items[0]?.snippet?.thumbnails?.default?.url ||
           "";
 
-        // Get video statistics
         const statsResponse = await axios.get(
           `${process.env.YOUTUBE_API_URL}/videos?id=${videoId}&part=statistics&key=${process.env.YOUTUBE_API_KEY}`
         );
@@ -204,7 +189,6 @@ export const fetchAndStoreYoutubeVideos = async (
         );
       }
 
-      // Insert posts into MongoDB
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
@@ -216,10 +200,8 @@ export const fetchAndStoreYoutubeVideos = async (
         break;
       }
 
-      // Get next page token
       nextPageToken = response.data.nextPageToken;
 
-      // Break if no more pages available
       if (!nextPageToken) {
         console.log("🚀 No more pages available. Stopping.");
         break;
@@ -233,6 +215,10 @@ export const fetchAndStoreYoutubeVideos = async (
   }
 };
 
+/**
+ * Fetch and store Twitter posts recursively until MAX_POSTS (10) is reached.
+ * @param keyword - The search keyword for fetching posts.
+ */
 export const fetchAndStoreTwitterPosts = async (
   keyword: string
 ): Promise<void> => {
@@ -241,7 +227,6 @@ export const fetchAndStoreTwitterPosts = async (
     let nextCursor: string | null = null;
 
     while (totalPostsStored < MAX_POSTS) {
-      // Encode the keyword for URL safety
       const encodedKeyword = encodeURIComponent(keyword);
       let url = `${process.env.SOCIAL_TOOLS_API_URL}/search?query=${encodedKeyword}&type=Latest`;
       if (nextCursor) {
@@ -269,7 +254,6 @@ export const fetchAndStoreTwitterPosts = async (
       for (const tweet of data.tweets) {
         if (totalPostsStored >= MAX_POSTS) break;
 
-        // Skip if essential data is missing
         if (!tweet.id_str || !tweet.user?.screen_name) {
           console.log("⚠️ Skipping tweet due to missing required data");
           continue;
@@ -304,10 +288,8 @@ export const fetchAndStoreTwitterPosts = async (
         break;
       }
 
-      // Get next cursor from response
       nextCursor = data.next_cursor || null;
 
-      // Break if no more pages available or we've reached the limit
       if (!nextCursor || totalPostsStored >= MAX_POSTS) {
         console.log("🚀 Fetching complete!");
         break;
@@ -321,18 +303,79 @@ export const fetchAndStoreTwitterPosts = async (
   }
 };
 
-/**
- * Fetches all stored posts from the database
- * @returns Array of posts sorted by creation date
- */
-export const getAllPosts = async () => {
-  try {
-    const posts = await Post.find().sort({ created_at: -1 }).exec();
+interface FilterOptions {
+  platforms?: string[];
+  dateRange?: { start: Date | null; end: Date | null };
+  flagStatus?: string;
+  sortBy?: string;
+}
 
-    console.log(`📚 Retrieved ${posts.length} posts from database`);
-    return posts;
+export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions) => {
+  try {
+    // Build base query for filters
+    const baseQuery: any = {};
+    
+    if (filters.platforms && filters.platforms.length > 0) {
+      baseQuery.platform = { $in: filters.platforms };
+    }
+
+    if (filters.dateRange?.start && filters.dateRange?.end) {
+      const startDate = new Date(filters.dateRange.start);
+      const endDate = new Date(filters.dateRange.end);
+      endDate.setHours(23, 59, 59, 999);
+      
+      baseQuery.created_at = { $gte: startDate, $lte: endDate };
+    }
+
+    if (filters.flagStatus) {
+      baseQuery.flagged = filters.flagStatus === 'flagged';
+    }
+
+    // Get total counts first (unaffected by pagination)
+    const totalPosts = await Post.countDocuments(baseQuery);
+    const totalFlaggedPosts = await Post.countDocuments({ ...baseQuery, flagged: true });
+
+    // Then get paginated data
+    let query = Post.find(baseQuery);
+
+    // Apply sorting
+    if (filters.sortBy === 'engagement') {
+      query = query.sort({
+        likesCount: -1,
+        commentsCount: -1
+      });
+    } else {
+      query = query.sort({ created_at: -1 });
+    }
+
+    // Apply pagination to data fetch only
+    const posts = await query.skip(skip).limit(limit).exec();
+
+    return { 
+      posts,
+      totalPosts,        // Total count with filters
+      totalFlaggedPosts, // Total flagged count with filters
+      totalAllPosts: await Post.countDocuments({}),  // Total posts without any filters
+      totalAllFlagged: await Post.countDocuments({ flagged: true }) // Total flagged without filters
+    };
   } catch (error) {
     console.error("❌ Error fetching posts:", error);
+    throw error;
+  }
+};
+
+export const togglePostFlagService = async (postId: string) => {
+  try {
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw new Error('Post not found');
+    }
+
+    post.flagged = !post.flagged;
+    await post.save();
+    return post;
+  } catch (error) {
+    console.error("❌ Error toggling post flag:", error);
     throw error;
   }
 };
