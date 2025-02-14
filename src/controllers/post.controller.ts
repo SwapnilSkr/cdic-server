@@ -34,7 +34,6 @@ export const uploadPosts = async (
 
     res.status(200).json({
       message: "All posts fetched and stored successfully",
-      maxLimit: 500,
     });
   } catch (error) {
     console.error("❌ Error in uploadPosts controller:", error);

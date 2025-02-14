@@ -3,6 +3,8 @@ import mongoose, { Schema, Document } from "mongoose";
 // Define TypeScript Interface for a Post
 export interface IPost extends Document {
   platform: string;
+  post_id: string;
+  author_id: string;
   profile_pic: string;
   username: string;
   caption: string;
@@ -20,6 +22,8 @@ export interface IPost extends Document {
 // MongoDB Schema & Model
 const postSchema = new Schema<IPost>({
   platform: { type: String, required: true },
+  post_id: { type: String, required: true },
+  author_id: { type: String, required: true },
   profile_pic: { type: String, required: true },
   username: { type: String, required: true },
   caption: { type: String, required: false },

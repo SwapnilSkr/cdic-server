@@ -1,15 +1,15 @@
 import axios from "axios";
 import Post, { IPost } from "../models/post.model";
+import { createInstagramAuthor, createYoutubeAuthor, createTwitterAuthor } from "./author.service";
+import Author from "../models/author.model";
 
-const MAX_POSTS = 100;
+const MAX_POSTS = 200;
 
 /**
- * Fetch and store Instagram posts recursively until MAX_POSTS (100) is reached.
+ * Fetch and store Instagram posts recursively until MAX_POSTS (10) is reached.
  * @param keyword - The hashtag keyword for fetching posts.
  */
-export const fetchAndStoreInstagramPosts = async (
-  keyword: string
-): Promise<void> => {
+export const fetchAndStoreInstagramPosts = async (keyword: string): Promise<void> => {
   let totalPostsStored = 0;
   let nextPageId: string | null = null;
 
@@ -31,6 +31,7 @@ export const fetchAndStoreInstagramPosts = async (
 
       const data = response.data;
 
+      // Debug log to check response structure
       console.log("📊 Response Data Structure:", {
         hasResponse: !!data.response,
         sectionsCount: data.response?.sections?.length || 0,
@@ -47,21 +48,37 @@ export const fetchAndStoreInstagramPosts = async (
       for (const section of data.response.sections) {
         console.log("📑 Section Structure:", {
           layoutType: section.layout_type,
+          hasClips: !!section.layout_content?.one_by_two_item?.clips?.items,
           hasMedias: !!section.layout_content?.medias,
         });
 
-        const medias = section.layout_content?.medias || [];
-        console.log(`🔍 Found ${medias.length} items in section`);
+        // Extract all available media content from multiple sources
+        const clipsItems = section.layout_content?.one_by_two_item?.clips?.items || [];
+        const mediaItems = section.layout_content?.medias || [];
+        const allMedias = [...clipsItems, ...mediaItems];
 
-        for (const item of medias) {
+        console.log(`🔍 Found ${allMedias.length} total media items`);
+
+        for (const item of allMedias) {
           if (totalPostsStored >= MAX_POSTS) break;
 
           const media = item.media || {};
+          const postId = media.id; // Use media.id as post_id
+
+          // Check if post already exists
+          const existingPost = await Post.findOne({ post_id: postId });
+          if (existingPost) {
+            console.log(`⚠️ Skipping post ${postId} as it already exists.`);
+            continue; // Skip if post already exists
+          }
+
           const user = media.user || {};
           const caption = media.caption || {};
 
-          if (!media.code || !user.username) {
-            console.log("⚠️ Skipping post due to missing required data");
+          // Create or fetch the author
+          const author = await createInstagramAuthor(user.pk);
+          if (!author) {
+            console.log("⚠️ Skipping post due to author creation failure");
             continue;
           }
 
@@ -81,14 +98,16 @@ export const fetchAndStoreInstagramPosts = async (
           postsData.push(
             new Post({
               platform: "Instagram",
+              post_id: postId, // Store post ID
+              author_id: author.author_id, // Store author ID
               profile_pic: user.profile_pic_url || "",
               username: user.username || "",
               caption: caption.text || "",
-              image_url: imageUrl ? imageUrl : "",
-              video_url: videoUrl ? videoUrl : "",
+              image_url: imageUrl || "",
+              video_url: videoUrl || "",
               likesCount,
               commentsCount,
-              viewsCount,
+              viewsCount, // Store views count
               created_at: postTimestamp,
               post_url: postUrl,
             })
@@ -96,15 +115,14 @@ export const fetchAndStoreInstagramPosts = async (
         }
       }
 
+      // Extract next page ID
       nextPageId = data.response?.next_page_id || data.next_page_id || null;
       console.log("📄 Next page ID:", nextPageId);
 
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
-        console.log(
-          `✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`
-        );
+        console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`);
       } else {
         console.log("⚠️ No new posts found.");
       }
@@ -129,9 +147,7 @@ export const fetchAndStoreInstagramPosts = async (
  * Fetch and store YouTube videos recursively until MAX_POSTS (100) is reached.
  * @param keyword - The search keyword for fetching videos.
  */
-export const fetchAndStoreYoutubeVideos = async (
-  keyword: string
-): Promise<void> => {
+export const fetchAndStoreYoutubeVideos = async (keyword: string): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let nextPageToken = "";
@@ -142,49 +158,54 @@ export const fetchAndStoreYoutubeVideos = async (
       );
 
       const videos = response.data.items;
-      const postsData: any[] = [];
+      const postsData: IPost[] = [];
 
       for (const video of videos) {
         if (totalPostsStored >= MAX_POSTS) break;
 
-        const videoId = video.id.videoId;
-        const title = video.snippet.title;
-        const description = video.snippet.description;
-        const thumbnailUrl = video.snippet.thumbnails.high.url;
-        const channelTitle = video.snippet.channelTitle;
         const channelId = video.snippet.channelId;
-        const publishedAt = new Date(video.snippet.publishedAt);
-        const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        
+        // Create or fetch the author
+        const author = await createYoutubeAuthor(channelId);
+        if (!author) {
+          console.log("⚠️ Skipping video due to author creation failure");
+          continue;
+        }
 
-        const channelResponse = await axios.get(
-          `${process.env.YOUTUBE_API_URL}/channels?id=${channelId}&part=snippet&key=${process.env.YOUTUBE_API_KEY}`
-        );
-        const channelProfilePic =
-          channelResponse.data.items[0]?.snippet?.thumbnails?.default?.url ||
-          "";
+        const videoId = video.id.videoId;
+        if (!videoId) {
+          console.error("⚠️ Video ID is missing for video:", video);
+          continue; // Skip if videoId is missing
+        }
+
+        // Check if post already exists
+        const existingPost = await Post.findOne({ post_id: videoId });
+        if (existingPost) {
+          console.log(`⚠️ Skipping video ${videoId} as it already exists.`);
+          continue; // Skip if post already exists
+        }
 
         const statsResponse = await axios.get(
           `${process.env.YOUTUBE_API_URL}/videos?id=${videoId}&part=statistics&key=${process.env.YOUTUBE_API_KEY}`
         );
 
         const statistics = statsResponse.data.items[0]?.statistics || {};
-        const likesCount = parseInt(statistics.likeCount) || 0;
-        const commentsCount = parseInt(statistics.commentCount) || 0;
-        const viewsCount = parseInt(statistics.viewCount) || 0;
-
+        
         postsData.push(
           new Post({
             platform: "Youtube",
-            profile_pic: channelProfilePic,
-            title,
-            username: channelTitle,
-            caption: description,
-            image_url: thumbnailUrl,
-            likesCount,
-            commentsCount,
-            viewsCount,
-            created_at: publishedAt,
-            post_url: videoUrl,
+            post_id: videoId,
+            author_id: author.author_id,
+            profile_pic: author.profile_pic,
+            username: author.username,
+            title: video.snippet.title,
+            caption: video.snippet.description,
+            image_url: video.snippet.thumbnails.high.url,
+            likesCount: parseInt(statistics.likeCount) || 0,
+            commentsCount: parseInt(statistics.commentCount) || 0,
+            viewsCount: parseInt(statistics.viewCount) || 0,
+            created_at: new Date(video.snippet.publishedAt),
+            post_url: `https://www.youtube.com/watch?v=${videoId}`,
           })
         );
       }
@@ -219,9 +240,7 @@ export const fetchAndStoreYoutubeVideos = async (
  * Fetch and store Twitter posts recursively until MAX_POSTS (10) is reached.
  * @param keyword - The search keyword for fetching posts.
  */
-export const fetchAndStoreTwitterPosts = async (
-  keyword: string
-): Promise<void> => {
+export const fetchAndStoreTwitterPosts = async (keyword: string): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let nextCursor: string | null = null;
@@ -259,12 +278,41 @@ export const fetchAndStoreTwitterPosts = async (
           continue;
         }
 
-        const postUrl = `https://x.com/${tweet.user.screen_name}/status/${tweet.id_str}`;
+        // Check if post already exists
+        const existingPost = await Post.findOne({ post_id: tweet.id_str });
+        if (existingPost) {
+          console.log(`⚠️ Skipping tweet ${tweet.id_str} as it already exists.`);
+          continue; // Skip if post already exists
+        }
+
+        // Check if author already exists
+        let author = await Author.findOne({ author_id: tweet.user.id_str });
+        if (!author) {
+          // Create author directly from tweet data if not exists
+          author = new Author({
+            author_id: tweet.user.id_str,
+            username: tweet.user.screen_name,
+            profile_pic: tweet.user.profile_image_url_https,
+            followers_count: tweet.user.followers_count,
+            posts_count: tweet.user.statuses_count,
+            profile_link: `https://twitter.com/${tweet.user.screen_name}`
+          });
+
+          // Save the author to the database
+          await author.save();
+          console.log(`✅ Created author: ${author.username}`);
+        } else {
+          console.log(`⚠️ Author ${author.username} already exists. Using existing author.`);
+        }
+
+        const postUrl = `https://twitter.com/${tweet.user.screen_name}/status/${tweet.id_str}`;
         const createdAt = new Date(tweet.tweet_created_at);
 
         postsData.push(
           new Post({
             platform: "Twitter",
+            post_id: tweet.id_str,
+            author_id: author.author_id,
             profile_pic: tweet.user.profile_image_url_https || "",
             username: tweet.user.screen_name,
             caption: tweet.full_text || "",
