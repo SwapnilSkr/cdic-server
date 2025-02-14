@@ -59,6 +59,7 @@ export const getAllStoredPosts = async (
       dateRange: req.query.dateRange ? JSON.parse(req.query.dateRange as string) : null,
       flagStatus: req.query.flagStatus as string,
       sortBy: req.query.sortBy as string || 'recent',
+      keyword: req.query.keyword as string || '',
     };
 
     const skip = (page - 1) * limit;

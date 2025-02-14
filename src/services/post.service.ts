@@ -308,12 +308,22 @@ interface FilterOptions {
   dateRange?: { start: Date | null; end: Date | null };
   flagStatus?: string;
   sortBy?: string;
+  keyword?: string;
 }
 
 export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions) => {
   try {
     // Build base query for filters
     const baseQuery: any = {};
+    
+    // Add keyword search across multiple fields
+    if (filters.keyword) {
+      baseQuery.$or = [
+        { platform: { $regex: filters.keyword, $options: 'i' } },
+        { username: { $regex: filters.keyword, $options: 'i' } },
+        { caption: { $regex: filters.keyword, $options: 'i' } }
+      ];
+    }
     
     if (filters.platforms && filters.platforms.length > 0) {
       baseQuery.platform = { $in: filters.platforms };
