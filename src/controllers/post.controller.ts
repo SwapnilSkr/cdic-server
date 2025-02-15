@@ -5,8 +5,10 @@ import {
   fetchAndStoreYoutubeVideos,
   getAllPosts,
   togglePostFlagService,
+  getPlatformStatistics,
 } from "../services/post.service";
-
+import { createTopic, updateTopic } from "../services/topic.service";
+import { Topic } from "../models/topic.model";
 /**
  * Controller to handle uploading all posts.
  */
@@ -15,22 +17,30 @@ export const uploadPosts = async (
   res: Response
 ): Promise<void> => {
   try {
-    const { keyword } = req.query;
-
-    if (!keyword || typeof keyword !== "string") {
+    const topicData = req.body;
+    if (!topicData.name || typeof topicData.name !== "string") {
       res
         .status(400)
-        .json({ error: "Keyword parameter is required and must be a string" });
+        .json({ error: "Topic name parameter is required and must be a string" });
       return;
     }
 
-    console.log(`🔍 Fetching Instagram posts for keyword: ${keyword}`);
+    // Create topic if active
+    let topic : Topic | null = null;
+    if (topicData._id) {
+      topic = await updateTopic(topicData._id, topicData);
+    } else {
+      topic = await createTopic(topicData);
+    }
 
-    await fetchAndStoreInstagramPosts(keyword);
-
-    await fetchAndStoreYoutubeVideos(keyword);
-
-    await fetchAndStoreTwitterPosts(keyword);
+    if (topic && topic.active) {
+      // Pass topic name to fetch functions
+      await fetchAndStoreInstagramPosts(topicData.name, topic._id as unknown as string);
+      await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
+      await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
+    } else {
+      console.log("❌ Topic is not active");
+    }
 
     res.status(200).json({
       message: "All posts fetched and stored successfully",
@@ -123,6 +133,23 @@ export const togglePostFlag = async (
     });
   } catch (error) {
     console.error("❌ Error in togglePostFlag controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// New controller function for platform statistics
+export const fetchPlatformStatistics = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const statistics = await getPlatformStatistics();
+    res.status(200).json({
+      message: "Platform statistics retrieved successfully",
+      data: statistics,
+    });
+  } catch (error) {
+    console.error("❌ Error in fetchPlatformStatistics controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };

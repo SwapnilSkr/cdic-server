@@ -1,5 +1,6 @@
 import Author, { IAuthor } from '../models/author.model';
 import axios from 'axios';
+import Post from '../models/post.model';
 
 export const createInstagramAuthor = async (userId: string): Promise<IAuthor | null> => {
   try {
@@ -115,3 +116,63 @@ export const createTwitterAuthor = async (userId: string): Promise<IAuthor | nul
     return null;
   }
 };
+
+export const getAllAuthorsInfo = async (
+  page: number, 
+  limit: number, 
+  search?: string,
+  platform?: string
+): Promise<{ authors: any[], totalAuthors: number }> => {
+  try {
+    // First get all author_ids that have posts in the specified platform
+    let authorIdsWithPlatform: string[] = [];
+    if (platform) {
+      const platformPosts = await Post.find({ platform }).distinct('author_id');
+      authorIdsWithPlatform = platformPosts;
+    }
+
+    // Build the query
+    let query = Author.find()
+    
+    // Apply search filter if provided
+    if (search) {
+      query = query.where('username', new RegExp(search, 'i'))
+    }
+
+    // Apply platform filter if provided
+    if (platform) {
+      query = query.where('author_id').in(authorIdsWithPlatform)
+    }
+
+    // Get total count before pagination
+    const totalAuthors = await Author.countDocuments(query.getQuery())
+
+    // Apply pagination
+    const authors = await query
+      .skip((page - 1) * limit)
+      .limit(limit)
+      .lean()
+
+    // Get platform information for each author
+    const authorInfoPromises = authors.map(async (author) => {
+      const posts = await Post.findOne({ author_id: author.author_id });
+      return {
+        author_id: author.author_id,
+        username: author.username,
+        platform: posts?.platform || 'unknown',
+        followers_count: author.followers_count,
+        posts_count: author.posts_count,
+      }
+    })
+
+    const authorInfo = await Promise.all(authorInfoPromises)
+
+    return {
+      authors: authorInfo,
+      totalAuthors
+    }
+  } catch (error) {
+    console.error('❌ Error fetching authors:', error)
+    return { authors: [], totalAuthors: 0 }
+  }
+}

@@ -9,7 +9,7 @@ const MAX_POSTS = 200;
  * Fetch and store Instagram posts recursively until MAX_POSTS (10) is reached.
  * @param keyword - The hashtag keyword for fetching posts.
  */
-export const fetchAndStoreInstagramPosts = async (keyword: string): Promise<void> => {
+export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: string): Promise<void> => {
   let totalPostsStored = 0;
   let nextPageId: string | null = null;
 
@@ -110,6 +110,7 @@ export const fetchAndStoreInstagramPosts = async (keyword: string): Promise<void
               viewsCount, // Store views count
               created_at: postTimestamp,
               post_url: postUrl,
+              topic_ids: [topicId], // Add topic reference
             })
           );
         }
@@ -147,7 +148,7 @@ export const fetchAndStoreInstagramPosts = async (keyword: string): Promise<void
  * Fetch and store YouTube videos recursively until MAX_POSTS (100) is reached.
  * @param keyword - The search keyword for fetching videos.
  */
-export const fetchAndStoreYoutubeVideos = async (keyword: string): Promise<void> => {
+export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: string): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let nextPageToken = "";
@@ -206,6 +207,7 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string): Promise<void>
             viewsCount: parseInt(statistics.viewCount) || 0,
             created_at: new Date(video.snippet.publishedAt),
             post_url: `https://www.youtube.com/watch?v=${videoId}`,
+            topic_ids: [topicId], // Add topic reference
           })
         );
       }
@@ -240,7 +242,7 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string): Promise<void>
  * Fetch and store Twitter posts recursively until MAX_POSTS (10) is reached.
  * @param keyword - The search keyword for fetching posts.
  */
-export const fetchAndStoreTwitterPosts = async (keyword: string): Promise<void> => {
+export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let nextCursor: string | null = null;
@@ -321,6 +323,7 @@ export const fetchAndStoreTwitterPosts = async (keyword: string): Promise<void> 
             likesCount: tweet.favorite_count || 0,
             commentsCount: tweet.reply_count || 0,
             viewsCount: tweet.views_count || 0,
+            topic_ids: [topicId], // Add topic reference
           })
         );
       }
@@ -434,6 +437,41 @@ export const togglePostFlagService = async (postId: string) => {
     return post;
   } catch (error) {
     console.error("❌ Error toggling post flag:", error);
+    throw error;
+  }
+};
+
+// New function to get platform statistics
+export const getPlatformStatistics = async (): Promise<any> => {
+  try {
+    const statistics = await Post.aggregate([
+      {
+        $lookup: {
+          from: "authors", // Join with authors collection
+          localField: "author_id",
+          foreignField: "author_id",
+          as: "authorDetails"
+        }
+      },
+      {
+        $unwind: {
+          path: "$authorDetails",
+          preserveNullAndEmptyArrays: true // Preserve posts without authors
+        }
+      },
+      {
+        $group: {
+          _id: "$platform",
+          totalFollowers: { $sum: { $ifNull: ["$authorDetails.followers_count", 0] } }, // Sum followers from author details
+          totalViews: { $sum: "$viewsCount" },
+        },
+      },
+    ]);
+
+    console.log("📊 Platform Statistics:", statistics); // Log the statistics for debugging
+    return statistics;
+  } catch (error) {
+    console.error("❌ Error fetching platform statistics:", error);
     throw error;
   }
 };

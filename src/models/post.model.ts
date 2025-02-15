@@ -17,6 +17,7 @@ export interface IPost extends Document {
   created_at: Date;
   post_url: string; // New field to store Instagram post link
   flagged: boolean;
+  topic_ids: mongoose.Types.ObjectId[]; // New field for topic references
 }
 
 // MongoDB Schema & Model
@@ -36,6 +37,7 @@ const postSchema = new Schema<IPost>({
   created_at: { type: Date, required: true },
   post_url: { type: String, required: true }, // Store post link
   flagged: { type: Boolean, default: false },
+  topic_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: "Topic" }], // New field for topic references
 });
 
 const Post = mongoose.model<IPost>("Post", postSchema);
