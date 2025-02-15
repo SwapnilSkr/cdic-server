@@ -162,6 +162,7 @@ export const getAllAuthorsInfo = async (
         platform: posts?.platform || 'unknown',
         followers_count: author.followers_count,
         posts_count: author.posts_count,
+        profile_link: author.profile_link
       }
     })
 

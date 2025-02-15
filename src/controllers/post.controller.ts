@@ -6,6 +6,7 @@ import {
   getAllPosts,
   togglePostFlagService,
   getPlatformStatistics,
+  getPostStatistics,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -150,6 +151,22 @@ export const fetchPlatformStatistics = async (
     });
   } catch (error) {
     console.error("❌ Error in fetchPlatformStatistics controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getPostStats = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const stats = await getPostStatistics();
+    res.status(200).json({
+      message: "Post statistics retrieved successfully",
+      data: stats,
+    });
+  } catch (error) {
+    console.error("❌ Error in getPostStats controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };

@@ -475,3 +475,18 @@ export const getPlatformStatistics = async (): Promise<any> => {
     throw error;
   }
 };
+
+export const getPostStatistics = async () => {
+  try {
+    const totalPosts = await Post.countDocuments({});
+    const flaggedPosts = await Post.countDocuments({ flagged: true });
+
+    return {
+      totalPosts,
+      flaggedPosts
+    };
+  } catch (error) {
+    console.error("❌ Error fetching post statistics:", error);
+    throw error;
+  }
+};
