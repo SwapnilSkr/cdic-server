@@ -1,0 +1,31 @@
+import mongoose, { Schema, Document } from "mongoose";
+
+export interface Topic extends Document {
+  name: string;
+  description: string;
+  tags: string[];
+  active: boolean;
+  alertThreshold: number;
+  sentiment: {
+    positive: number;
+    neutral: number;
+    negative: number;
+  };
+  sentimentHistory: any[]; // Adjust type as necessary
+}
+
+const topicSchema: Schema = new Schema({
+  name: { type: String, required: true },
+  description: { type: String, required: true },
+  tags: { type: [String], required: true },
+  active: { type: Boolean, default: true },
+  alertThreshold: { type: Number, default: 75 },
+  sentiment: {
+    positive: { type: Number, default: 0 },
+    neutral: { type: Number, default: 0 },
+    negative: { type: Number, default: 0 },
+  },
+  sentimentHistory: { type: [Object], default: [] },
+}, { timestamps: true });
+
+export const TopicModel = mongoose.model<Topic>("Topic", topicSchema);

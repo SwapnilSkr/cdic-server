@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import { connectDB } from "../config/database";
 import postRouter from "./routers/post.route";
+import topicRouter from "./routers/topic.route";
 
 dotenv.config();
 
@@ -21,6 +22,7 @@ app.use((req: Request, res: Response, next) => {
 
 // Routes
 app.use("/api/posts", postRouter);
+app.use("/api/topics", topicRouter);
 
 // Connect to MongoDB
 connectDB()
