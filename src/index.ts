@@ -7,6 +7,7 @@ import topicRouter from "./routers/topic.route";
 import authorRouter from "./routers/author.route";
 import aiRouter from "./routers/ai.route";
 import userRouter from "./routers/user.route";
+import auditRouter from "./routers/audit.route";
 
 dotenv.config();
 
@@ -29,6 +30,8 @@ app.use("/api/topics", topicRouter);
 app.use("/api/authors", authorRouter);
 app.use("/api/ai", aiRouter);
 app.use("/api/auth", userRouter);
+app.use("/api/audit", auditRouter);
+
 // Connect to MongoDB
 connectDB()
   .then(() => {

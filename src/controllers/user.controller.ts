@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import * as userService from '../services/user.service';
+import * as auditService from '../services/audit.service';
 
 export const registerUser = async (req: Request, res: Response) => {
   try {
@@ -18,6 +19,12 @@ export const registerUser = async (req: Request, res: Response) => {
       password, 
       name, 
       role 
+    });
+
+    await auditService.createAudit({
+      userId: result.user._id as string,
+      action: "User Registration",
+      actionType: "profile"
     });
 
     res.status(201).json(result);
@@ -41,6 +48,13 @@ export const loginUser = async (req: Request, res: Response) => {
     }
 
     const result = await userService.login(email, password);
+
+    await auditService.createAudit({
+      userId: result.user._id as string,
+      action: "User Login",
+      actionType: "profile"
+    });
+
     res.status(200).json(result);
   } catch (error: any) {
     res.status(401).json({
@@ -62,6 +76,13 @@ export const updateUserProfile = async (req: Request, res: Response) => {
     }
 
     const result = await userService.updateUser(userId, { name, email });
+
+    await auditService.createAudit({
+      userId,
+      action: "Profile Update",
+      actionType: "profile"
+    });
+
     res.status(200).json(result);
   } catch (error: any) {
     res.status(400).json({
@@ -86,6 +107,13 @@ export const updateUserPassword = async (req: Request, res: Response) => {
       currentPassword,
       newPassword
     });
+
+    await auditService.createAudit({
+      userId,
+      action: "Password Change",
+      actionType: "profile"
+    });
+
     res.status(200).json(result);
   } catch (error: any) {
     res.status(400).json({
@@ -107,8 +135,23 @@ export const getAllUsers = async (req: Request, res: Response) => {
 
 export const updateUser = async (req: Request, res: Response) => {
   try {
+    const loggedInUserId = req.user?.id;
+    if (!loggedInUserId) {
+      res.status(401).json({
+        message: 'User not authenticated'
+      });
+      return;
+    }
+
     const { userId, newRole, name } = req.body;
     const updatedUser = await userService.updateUserRole({ userId, newRole, name });
+
+    await auditService.createAudit({
+      userId: loggedInUserId,
+      action: "Role Update",
+      actionType: "profile"
+    });
+
     res.status(200).json(updatedUser);
   } catch (error: any) {
     console.log(error);
@@ -120,8 +163,22 @@ export const updateUser = async (req: Request, res: Response) => {
 
 export const deleteUser = async (req: Request, res: Response) => {
   try {
+    const loggedInUserId = req.user?.id;
+    if (!loggedInUserId) {
+      res.status(401).json({
+        message: 'User not authenticated'
+      });
+      return;
+    }
     const { userId } = req.params;
     await userService.deleteUser(userId);
+
+    await auditService.createAudit({
+      userId: loggedInUserId,
+      action: "User Deletion",
+      actionType: "profile"
+    });
+
     res.status(200).json({ message: 'User deleted successfully' });
   } catch (error: any) {
     res.status(400).json({
