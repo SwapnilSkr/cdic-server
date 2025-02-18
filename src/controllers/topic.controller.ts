@@ -31,10 +31,12 @@ export const updateTopicController = async (req: Request, res: Response) => {
   try {
     const updatedTopic = await updateTopic(topicId, topicData);
     if (!updatedTopic) {
-       res.status(404).json({ message: "Topic not found" });
+      res.status(404).json({ message: "Topic not found" });
+      return;
     }
     res.status(200).json(updatedTopic);
   } catch (error) {
+    console.error("Error updating topic:", error);
     res.status(500).json({ message: "Error updating topic", error });
   }
 };
@@ -46,6 +48,7 @@ export const deleteTopicController = async (req: Request, res: Response)  => {
     const deletedTopic = await deleteTopic(topicId);
     if (!deletedTopic) {
        res.status(404).json({ message: "Topic not found" });
+       return;
     }
     res.status(204).send(); // No content
   } catch (error) {
