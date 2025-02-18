@@ -6,11 +6,12 @@ import postRouter from "./routers/post.route";
 import topicRouter from "./routers/topic.route";
 import authorRouter from "./routers/author.route";
 import aiRouter from "./routers/ai.route";
+import userRouter from "./routers/user.route";
 
 dotenv.config();
 
 const app: Express = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 
 app.use(cors());
 app.use(express.json());
@@ -27,6 +28,7 @@ app.use("/api/posts", postRouter);
 app.use("/api/topics", topicRouter);
 app.use("/api/authors", authorRouter);
 app.use("/api/ai", aiRouter);
+app.use("/api/auth", userRouter);
 // Connect to MongoDB
 connectDB()
   .then(() => {
