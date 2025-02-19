@@ -17,6 +17,9 @@ export interface IPost extends Document {
   created_at: Date;
   post_url: string; // New field to store Instagram post link
   flagged: boolean;
+  flaggedBy: mongoose.Types.ObjectId[]; // Array of User references
+  flagTimestamp: Date | null;
+  flaggedStatus: 'pending' | 'reviewed' | 'escalated' | null;
   topic_ids: mongoose.Types.ObjectId[]; // New field for topic references
 }
 
@@ -37,6 +40,13 @@ const postSchema = new Schema<IPost>({
   created_at: { type: Date, required: true },
   post_url: { type: String, required: true }, // Store post link
   flagged: { type: Boolean, default: false },
+  flaggedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  flagTimestamp: { type: Date, default: null },
+  flaggedStatus: { 
+    type: String, 
+    enum: ['pending', 'reviewed', 'escalated', null],
+    default: null 
+  },
   topic_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: "Topic" }], // New field for topic references
 });
 

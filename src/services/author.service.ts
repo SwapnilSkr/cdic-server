@@ -1,6 +1,7 @@
 import Author, { IAuthor } from '../models/author.model';
 import axios from 'axios';
 import Post from '../models/post.model';
+import mongoose from 'mongoose';
 
 export const createInstagramAuthor = async (userId: string): Promise<IAuthor | null> => {
   try {
@@ -177,3 +178,38 @@ export const getAllAuthorsInfo = async (
     return { authors: [], totalAuthors: 0 }
   }
 }
+
+export const toggleAuthorFlagService = async (authorId: string, userId: string) => {
+  try {
+    const author = await Author.findById(authorId);
+    if (!author) {
+      throw new Error('Author not found');
+    }
+
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    const flaggedByIndex = author.flaggedBy.indexOf(userIdObj);
+
+    if (flaggedByIndex === -1) {
+      // Add flag
+      author.flaggedBy.push(userIdObj);
+      author.flagged = true;
+      author.flagTimestamp = new Date();
+      author.flaggedStatus = 'pending';
+    } else {
+      // Remove flag
+      author.flaggedBy = author.flaggedBy.filter(id => !id.equals(userIdObj));
+      
+      if (author.flaggedBy.length === 0) {
+        author.flagged = false;
+        author.flagTimestamp = null;
+        author.flaggedStatus = null;
+      }
+    }
+
+    await author.save();
+    return author;
+  } catch (error) {
+    console.error("❌ Error toggling author flag:", error);
+    throw error;
+  }
+};

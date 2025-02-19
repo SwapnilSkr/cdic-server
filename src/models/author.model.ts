@@ -7,6 +7,10 @@ export interface IAuthor extends Document {
   followers_count: number;
   posts_count: number;
   profile_link: string;
+  flagged: boolean;
+  flaggedBy: mongoose.Types.ObjectId[]; // Array of User references
+  flagTimestamp: Date | null;
+  flaggedStatus: 'pending' | 'reviewed' | 'escalated' | null;
 }
 
 const authorSchema = new Schema<IAuthor>({
@@ -16,6 +20,14 @@ const authorSchema = new Schema<IAuthor>({
   followers_count: { type: Number, default: 0 },
   posts_count: { type: Number, default: 0 },
   profile_link: { type: String, default: '' },
+  flagged: { type: Boolean, default: false },
+  flaggedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  flagTimestamp: { type: Date, default: null },
+  flaggedStatus: { 
+    type: String, 
+    enum: ['pending', 'reviewed', 'escalated', null],
+    default: null 
+  }
 }, {
   timestamps: true
 });

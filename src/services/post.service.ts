@@ -1,7 +1,9 @@
 import axios from "axios";
 import Post, { IPost } from "../models/post.model";
 import { createInstagramAuthor, createYoutubeAuthor, createTwitterAuthor } from "./author.service";
-import Author from "../models/author.model";
+import Author, { IAuthor } from "../models/author.model";
+import mongoose from "mongoose";
+import { IUser } from "../models/user.model";
 
 const MAX_POSTS = 200;
 
@@ -362,7 +364,7 @@ interface FilterOptions {
   keyword?: string;
 }
 
-export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions) => {
+export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions, userId: string) => {
   try {
     // Build base query for filters
     const baseQuery: any = {};
@@ -390,6 +392,7 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
 
     if (filters.flagStatus) {
       baseQuery.flagged = filters.flagStatus === 'flagged';
+      baseQuery.flaggedBy = { $in: [userId] };
     }
 
     // Get total counts first (unaffected by pagination)
@@ -425,18 +428,53 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
   }
 };
 
-export const togglePostFlagService = async (postId: string) => {
+export const togglePostFlagService = async (postId: string, userId: string) => {
   try {
     const post = await Post.findById(postId);
     if (!post) {
       throw new Error('Post not found');
     }
 
-    post.flagged = !post.flagged;
+    const userIdObj = new mongoose.Types.ObjectId(userId);
+    const flaggedByIndex = post.flaggedBy.indexOf(userIdObj);
+
+    if (flaggedByIndex === -1) {
+      // Add flag
+      post.flaggedBy.push(userIdObj);
+      post.flagged = true;
+      post.flagTimestamp = new Date();
+      post.flaggedStatus = 'pending';
+    } else {
+      // Remove flag
+      post.flaggedBy = post.flaggedBy.filter(id => !id.equals(userIdObj));
+      
+      if (post.flaggedBy.length === 0) {
+        post.flagged = false;
+        post.flagTimestamp = null;
+        post.flaggedStatus = null;
+      }
+    }
+
     await post.save();
     return post;
   } catch (error) {
     console.error("❌ Error toggling post flag:", error);
+    throw error;
+  }
+};
+
+export const updatePostFlagStatus = async (postId: string, status: string) => {
+  try {
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw new Error('Post not found');
+    }
+
+    post.flaggedStatus = status as 'pending' | 'reviewed' | 'escalated' | null;
+    await post.save();
+    return post;
+  } catch (error) {
+    console.error("❌ Error updating post flag status:", error);
     throw error;
   }
 };
@@ -487,6 +525,110 @@ export const getPostStatistics = async () => {
     };
   } catch (error) {
     console.error("❌ Error fetching post statistics:", error);
+    throw error;
+  }
+};
+
+export const getFlaggedPostsService = async (filters: {
+  dateRange?: { from: Date; to: Date };
+  status?: string | null;
+  page?: number;
+  limit?: number;
+}) => {
+  try {
+    const page = filters.page || 1;
+    const limit = filters.limit || 10;
+    const skip = (page - 1) * limit;
+
+    let query = Post.find({ flagged: true });
+
+    // Apply date range filter
+    if (filters.dateRange?.from && filters.dateRange?.to) {
+      query = query.where('flagTimestamp')
+        .gte(new Date(filters.dateRange.from).getTime())
+        .lte(new Date(filters.dateRange.to).getTime());
+    }
+
+    // Apply status filter
+    if (filters.status) {
+      query = query.where('flaggedStatus').equals(filters.status);
+    }
+
+    // Get total count for pagination
+    const totalCount = await Post.countDocuments(query.getQuery());
+
+    // Add pagination to query
+    query = query
+      .skip(skip)
+      .limit(limit)
+      .populate('flaggedBy', 'name email')
+      .sort({ flagTimestamp: -1 }); // Sort by most recently flagged
+
+    const posts = await query.exec();
+
+    // Transform posts
+    const transformedPosts = posts.map(post => ({
+      id: post._id,
+      content: post.caption || post.title,
+      author: post.username,
+      flaggedBy: post.flaggedBy.length,
+      flaggedUsers: post.flaggedBy,
+      status: post.flaggedStatus,
+      timestamp: post.flagTimestamp,
+      platform: post.platform,
+      engagement: {
+        likes: post.likesCount,
+        comments: post.commentsCount,
+        views: post.viewsCount
+      }
+    }));
+
+    return {
+      items: transformedPosts,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(totalCount / limit),
+        totalItems: totalCount,
+        hasNextPage: page * limit < totalCount,
+        hasPrevPage: page > 1
+      }
+    };
+  } catch (error) {
+    console.error("❌ Error fetching flagged posts:", error);
+    throw error;
+  }
+};
+
+export const getPostDetailsService = async (postId: string) => {
+  try {
+    const post = await Post.findById(postId)
+      .populate<{ flaggedBy: IUser[] }>('flaggedBy', 'name email');
+
+    if (!post) {
+      throw new Error('Post not found');
+    }
+
+    // Fetch author details separately using author_id
+    const author = await Author.findOne({ author_id: post.author_id });
+
+    return {
+      id: post._id,
+      content: post.caption || post.title,
+      author: {
+        id: post.author_id,
+        username: author ? author.username : post.username // Fallback to post username if author not found
+      },
+      flaggedBy: post.flaggedBy.map(user => ({
+        id: user._id,
+        name: user.name,
+        email: user.email
+      })),
+      status: post.flaggedStatus,
+      timestamp: post.flagTimestamp,
+      platform: post.platform
+    };
+  } catch (error) {
+    console.error("❌ Error fetching post details:", error);
     throw error;
   }
 };

@@ -7,6 +7,9 @@ import {
   togglePostFlagService,
   getPlatformStatistics,
   getPostStatistics,
+  updatePostFlagStatus,
+  getFlaggedPostsService,
+  getPostDetailsService,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -60,6 +63,7 @@ export const getAllStoredPosts = async (
   res: Response
 ): Promise<void> => {
   try {
+    const userId = req.user?.id;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     
@@ -79,7 +83,7 @@ export const getAllStoredPosts = async (
       totalFlaggedPosts,
       totalAllPosts,
       totalAllFlagged 
-    } = await getAllPosts(skip, limit, filters);
+    } = await getAllPosts(skip, limit, filters, userId!);
 
     const transformedPosts = posts.map((post) => ({
       id: post._id,
@@ -94,6 +98,7 @@ export const getAllStoredPosts = async (
         views: post.viewsCount || 0,
         comments: post.commentsCount || 0,
       },
+      flaggedBy: post.flaggedBy,
       timestamp: post.created_at,
       content: post.caption,
     }));
@@ -127,13 +132,44 @@ export const togglePostFlag = async (
 ): Promise<void> => {
   try {
     const { postId } = req.params;
-    const updatedPost = await togglePostFlagService(postId);
+    const userId = req.user?.id;
+
+    if (!userId) {
+      res.status(401).json({ error: "User not authenticated" });
+      return;
+    }
+
+    const updatedPost = await togglePostFlagService(postId, userId);
     res.status(200).json({ 
       message: "Post flag toggled successfully",
       flagged: updatedPost.flagged 
     });
   } catch (error) {
     console.error("❌ Error in togglePostFlag controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const updatePostStatus = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { postId } = req.params;
+    const { status } = req.body;
+
+    if (!['pending', 'reviewed', 'escalated'].includes(status)) {
+      res.status(400).json({ error: "Invalid status" });
+      return;
+    }
+
+    const updatedPost = await updatePostFlagStatus(postId, status);
+    res.status(200).json({
+      message: "Post status updated successfully",
+      status: updatedPost.flaggedStatus
+    });
+  } catch (error) {
+    console.error("❌ Error in updatePostStatus controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -168,5 +204,50 @@ export const getPostStats = async (
   } catch (error) {
     console.error("❌ Error in getPostStats controller:", error);
     res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getFlaggedPosts = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    const dateRange = req.query.dateRange ? 
+      JSON.parse(req.query.dateRange as string) : undefined;
+    const status = req.query.status as string || null;
+
+    const result = await getFlaggedPostsService({
+      dateRange,
+      status,
+      page,
+      limit
+    });
+
+    res.status(200).json(result);
+  } catch (error) {
+    console.error("❌ Error in getFlaggedPosts controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getPostDetails = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { postId } = req.params;
+    
+    const postDetails = await getPostDetailsService(postId);
+    
+    res.status(200).json(postDetails);
+  } catch (error) {
+    console.error("❌ Error in getPostDetails controller:", error);
+    if (error instanceof Error && error.message === 'Post not found') {
+      res.status(404).json({ error: "Post not found" });
+    } else {
+      res.status(500).json({ error: "Internal server error" });
+    }
   }
 };
