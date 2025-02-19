@@ -642,12 +642,36 @@ export const getPostDetailsService = async (postId: string) => {
 
 export const getTodayMostDiscussedFeedWithTopics = async () => {
   try {
-    // Get today's start (12 AM) and end dates (11:59:59 PM)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);  // Sets to 12:00:00.000 AM
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    console.log("Fetching posts between:", today, tomorrow);
+    // Get current time in IST
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
+    const istNow = new Date(now.getTime() + istOffset);
+    
+    // Set to start of day in IST (00:00:00)
+    const istToday = new Date(istNow);
+    istToday.setUTCHours(0, 0, 0, 0);
+    
+    // Set to end of day in IST (23:59:59.999)
+    const istTomorrow = new Date(istToday);
+    istTomorrow.setUTCDate(istTomorrow.getUTCDate() + 1);
+
+    // Convert back to UTC for MongoDB query
+    const utcToday = new Date(istToday.getTime() - istOffset);
+    const utcTomorrow = new Date(istTomorrow.getTime() - istOffset);
+
+    console.log("Current time (IST):", 
+      new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    );
+    console.log("Query range (UTC):", 
+      utcToday.toISOString(),
+      "to",
+      utcTomorrow.toISOString()
+    );
+    console.log("Query range (IST):", 
+      utcToday.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+      "to",
+      utcTomorrow.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    );
 
     // Get all active topics
     const topics = await TopicModel.find({ active: true });
@@ -656,16 +680,16 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
     const topicPosts = await Promise.all(
       topics.map(async (topic) => {
         const posts = await Post.find({
-          created_at: { $gte: today, $lt: tomorrow },
+          created_at: { 
+            $gte: utcToday, 
+            $lt: utcTomorrow 
+          },
           topic_ids: { $in: topic._id }
         }).sort({
           likesCount: -1,
           commentsCount: -1
         }).limit(5);
 
-        console.log(`Found ${posts.length} posts for topic ${topic.name}`);
-
-        // Calculate total engagement for this topic today
         const totalEngagement = posts.reduce((sum, post) => 
           sum + (post.likesCount || 0) + (post.commentsCount || 0), 0
         );
@@ -691,7 +715,7 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
 
     // Sort topics by total engagement and get top 10
     const sortedTopics = topicPosts
-      .filter(topic => topic.totalEngagement > 0) // Only include topics with engagement
+      .filter(topic => topic.totalEngagement > 0)
       .sort((a, b) => b.totalEngagement - a.totalEngagement)
       .slice(0, 10);
 
