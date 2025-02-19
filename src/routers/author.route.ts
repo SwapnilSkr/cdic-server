@@ -4,7 +4,7 @@ import { authenticateToken } from '../middlewares/auth.middleware';
 
 const router = Router();
 
-router.get('/', fetchAllAuthors);
 router.post('/:authorId/flag', authenticateToken, toggleAuthorFlag);
+router.get('/', fetchAllAuthors);
 
 export default router;

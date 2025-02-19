@@ -181,7 +181,7 @@ export const getAllAuthorsInfo = async (
 
 export const toggleAuthorFlagService = async (authorId: string, userId: string) => {
   try {
-    const author = await Author.findById(authorId);
+    const author = await Author.findOne({ author_id: authorId });
     if (!author) {
       throw new Error('Author not found');
     }

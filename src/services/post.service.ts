@@ -522,11 +522,13 @@ export const getPostStatistics = async () => {
     const factCheckedPosts = await Post.countDocuments({ 
       flaggedStatus: { $in: ['reviewed', 'escalated'] } 
     });
+    const flaggedAuthors = await Author.countDocuments({ flagged: true });
 
     return {
       totalPosts,
       flaggedPosts,
-      factCheckedPosts
+      factCheckedPosts,
+      flaggedAuthors
     };
   } catch (error) {
     console.error("❌ Error fetching post statistics:", error);
