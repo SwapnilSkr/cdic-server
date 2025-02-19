@@ -1,5 +1,5 @@
 import express from "express";
-import { getAllStoredPosts, uploadPosts, togglePostFlag, fetchPlatformStatistics, getPostStats, updatePostStatus, getFlaggedPosts, getPostDetails } from "../controllers/post.controller";
+import { getAllStoredPosts, uploadPosts, togglePostFlag, fetchPlatformStatistics, getPostStats, updatePostStatus, getFlaggedPosts, getPostDetails, getTodayMostDiscussedFeed, getReviewedPosts } from "../controllers/post.controller";
 import { authenticateToken } from "../middlewares/auth.middleware";
 
 const router = express.Router();
@@ -10,7 +10,10 @@ router.get("/flagged", authenticateToken, getFlaggedPosts);
 router.post("/toggle-flag/:postId", authenticateToken, togglePostFlag);
 router.get("/platform-statistics", fetchPlatformStatistics);
 router.get("/statistics", getPostStats);
+router.get("/today-discussed", authenticateToken, getTodayMostDiscussedFeed);
+router.get("/reviewed", authenticateToken, getReviewedPosts);
 router.put("/:postId/status", authenticateToken, updatePostStatus);
 router.get("/:postId", authenticateToken, getPostDetails);
+
 
 export default router;

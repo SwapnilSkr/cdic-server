@@ -10,6 +10,8 @@ import {
   updatePostFlagStatus,
   getFlaggedPostsService,
   getPostDetailsService,
+  getTodayMostDiscussedFeedWithTopics,
+  getReviewedPostsService,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -249,5 +251,31 @@ export const getPostDetails = async (
     } else {
       res.status(500).json({ error: "Internal server error" });
     }
+  }
+};
+
+export const getTodayMostDiscussedFeed = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const feed = await getTodayMostDiscussedFeedWithTopics()
+    res.status(200).json(feed);
+  } catch (error) {
+    console.error("❌ Error in getTodayMostDiscussedFeed controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const getReviewedPosts = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const posts = await getReviewedPostsService(10);
+    res.status(200).json(posts);
+  } catch (error) {
+    console.error("❌ Error in getReviewedPosts controller:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 };

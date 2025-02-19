@@ -4,6 +4,7 @@ import { createInstagramAuthor, createYoutubeAuthor, createTwitterAuthor } from 
 import Author, { IAuthor } from "../models/author.model";
 import mongoose from "mongoose";
 import { IUser } from "../models/user.model";
+import {TopicModel, Topic} from "../models/topic.model";
 
 const MAX_POSTS = 200;
 
@@ -629,6 +630,102 @@ export const getPostDetailsService = async (postId: string) => {
     };
   } catch (error) {
     console.error("❌ Error fetching post details:", error);
+    throw error;
+  }
+};
+
+export const getTodayMostDiscussedFeedWithTopics = async () => {
+  try {
+    // Get today's start (12 AM) and end dates (11:59:59 PM)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);  // Sets to 12:00:00.000 AM
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    console.log("Fetching posts between:", today, tomorrow);
+
+    // Get all active topics
+    const topics = await TopicModel.find({ active: true });
+
+    // Get today's posts and calculate engagement for each topic
+    const topicPosts = await Promise.all(
+      topics.map(async (topic) => {
+        const posts = await Post.find({
+          created_at: { $gte: today, $lt: tomorrow },
+          topic_ids: { $in: topic._id }
+        }).sort({
+          likesCount: -1,
+          commentsCount: -1
+        }).limit(5);
+
+        console.log(`Found ${posts.length} posts for topic ${topic.name}`);
+
+        // Calculate total engagement for this topic today
+        const totalEngagement = posts.reduce((sum, post) => 
+          sum + (post.likesCount || 0) + (post.commentsCount || 0), 0
+        );
+
+        return {
+          topic: topic.name,
+          totalEngagement,
+          posts: posts.map(post => ({
+            _id: post._id,
+            content: post.caption || post.title,
+            platform: post.platform,
+            topic: topic.name,
+            timestamp: post.created_at,
+            post_url: post.post_url,
+            engagement: {
+              likes: post.likesCount || 0,
+              comments: post.commentsCount || 0
+            }
+          }))
+        };
+      })
+    );
+
+    // Sort topics by total engagement and get top 10
+    const sortedTopics = topicPosts
+      .filter(topic => topic.totalEngagement > 0) // Only include topics with engagement
+      .sort((a, b) => b.totalEngagement - a.totalEngagement)
+      .slice(0, 10);
+
+    // Flatten the posts array and sort by engagement
+    const allPosts = sortedTopics
+      .flatMap(topic => topic.posts)
+      .sort((a, b) => 
+        (b.engagement.likes + b.engagement.comments) - 
+        (a.engagement.likes + a.engagement.comments)
+      );
+
+    return {
+      items: allPosts,
+      topicsEngagement: sortedTopics.map(t => ({
+        topic: t.topic,
+        engagement: t.totalEngagement
+      }))
+    };
+  } catch (error) {
+    console.error("❌ Error getting today's most discussed feed:", error);
+    throw error;
+  }
+};
+
+export const getReviewedPostsService = async (limit: number = 10) => {
+  try {
+    const posts = await Post.find({ flaggedStatus: 'reviewed' })
+      .sort({ flagTimestamp: -1 })
+      .limit(limit);
+
+    return {
+      items: posts.map(post => ({
+        id: post._id,
+        content: post.caption || post.title,
+        timestamp: post.flagTimestamp,
+        post_url: post.post_url
+      }))
+    };
+  } catch (error) {
+    console.error("❌ Error fetching reviewed posts:", error);
     throw error;
   }
 };
