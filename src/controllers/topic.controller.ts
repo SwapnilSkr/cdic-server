@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { createTopic, getAllTopics, updateTopic, deleteTopic } from "../services/topic.service";
+import { createTopic, getAllTopics, updateTopic, deleteTopic, deleteTopicAndPosts } from "../services/topic.service";
 
 export const createTopicController = async (req: Request, res: Response) => {
   try {
@@ -45,7 +45,7 @@ export const deleteTopicController = async (req: Request, res: Response)  => {
   const topicId = req.params.id;
 
   try {
-    const deletedTopic = await deleteTopic(topicId);
+    const deletedTopic = await deleteTopicAndPosts(topicId);
     if (!deletedTopic) {
        res.status(404).json({ message: "Topic not found" });
        return;
