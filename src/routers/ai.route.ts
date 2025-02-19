@@ -1,8 +1,10 @@
 import express from 'express';
-import { chat } from '../controllers/ai.controller';
+import { chat, getChatHistoryController } from '../controllers/ai.controller';
+import { authenticateToken } from '../middlewares/auth.middleware';
 
 const router = express.Router();
 
-router.post('/chat', chat);
+router.post('/chat', authenticateToken, chat);
+router.get('/history', authenticateToken, getChatHistoryController);
 
 export default router; 

@@ -1,6 +1,8 @@
 import OpenAI from 'openai';
 import { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import dotenv from 'dotenv';
+import { AIChatHistoryModel } from '../models/aiChat.model';
+import mongoose from 'mongoose';
 
 dotenv.config();
 
@@ -32,7 +34,22 @@ You can also help users with:
 - Offering suggestions for better reporting and analysis
 `;
 
-export const generateResponse = async (messages: ChatCompletionMessageParam[]) => {
+export const getChatHistory = async (userId: string) => {
+  try {
+    const history = await AIChatHistoryModel.findOne({ 
+      userId: new mongoose.Types.ObjectId(userId) 
+    });
+    return history?.messages || [];
+  } catch (error) {
+    console.error('Error fetching chat history:', error);
+    throw error;
+  }
+};
+
+export const generateResponse = async (
+  messages: ChatCompletionMessageParam[], 
+  userId: string
+) => {
   try {
     // Add system message to the beginning of the conversation
     const conversationWithContext = [
@@ -47,7 +64,32 @@ export const generateResponse = async (messages: ChatCompletionMessageParam[]) =
       max_tokens: 500,
     });
 
-    return completion.choices[0].message;
+    const aiResponse = completion.choices[0].message;
+
+    // Update chat history
+    await AIChatHistoryModel.findOneAndUpdate(
+      { userId: new mongoose.Types.ObjectId(userId) },
+      { 
+        $push: { 
+          messages: [
+            { 
+              role: "user", 
+              content: messages[messages.length - 1].content,
+              timestamp: new Date()
+            },
+            { 
+              role: "assistant", 
+              content: aiResponse.content,
+              timestamp: new Date()
+            }
+          ] 
+        },
+        $set: { lastUpdated: new Date() }
+      },
+      { upsert: true, new: true }
+    );
+
+    return aiResponse;
   } catch (error) {
     console.error('OpenAI API Error:', error);
     throw new Error('Failed to generate AI response');
