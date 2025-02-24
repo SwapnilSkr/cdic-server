@@ -8,14 +8,16 @@ export const fetchAllAuthors = async (req: Request, res: Response) => {
     page = 1, 
     limit = 10, 
     search = '', 
-    platform = '' 
+    platform = '' ,
+    flagged = ''
   } = req.query;
 
   const result = await getAllAuthorsInfo(
     Number(page), 
     Number(limit), 
     search as string,
-    platform as string
+    platform as string,
+    flagged as string
   );
 
   res.json(result);

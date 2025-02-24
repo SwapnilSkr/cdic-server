@@ -122,60 +122,63 @@ export const getAllAuthorsInfo = async (
   page: number, 
   limit: number, 
   search?: string,
-  platform?: string
+  platform?: string,
+  flagged?: string
 ): Promise<{ authors: any[], totalAuthors: number }> => {
   try {
-    // First get all author_ids that have posts in the specified platform
-    let authorIdsWithPlatform: string[] = [];
-    if (platform) {
-      const platformPosts = await Post.find({ platform }).distinct('author_id');
-      authorIdsWithPlatform = platformPosts;
-    }
-
     // Build the query
-    let query = Author.find()
-    
+    let query: any = {};
+
     // Apply search filter if provided
     if (search) {
-      query = query.where('username', new RegExp(search, 'i'))
+      query.username = new RegExp(search, 'i');
     }
 
     // Apply platform filter if provided
     if (platform) {
-      query = query.where('author_id').in(authorIdsWithPlatform)
+      const platformPosts = await Post.find({ platform }).distinct('author_id');
+      query.author_id = { $in: platformPosts };
+    }
+
+    // Fix: Properly handle flagged filter
+    if (flagged === 'true') {
+      query.flagged = true;
+    } else if (flagged === 'false') {
+      query.flagged = { $ne: true };
     }
 
     // Get total count before pagination
-    const totalAuthors = await Author.countDocuments(query.getQuery())
+    const totalAuthors = await Author.countDocuments(query);
 
-    // Apply pagination
-    const authors = await query
+    // Get paginated results
+    const authors = await Author.find(query)
       .skip((page - 1) * limit)
       .limit(limit)
-      .lean()
+      .lean();
 
     // Get platform information for each author
-    const authorInfoPromises = authors.map(async (author) => {
-      const posts = await Post.findOne({ author_id: author.author_id });
-      return {
-        author_id: author.author_id,
-        username: author.username,
-        platform: posts?.platform || 'unknown',
-        followers_count: author.followers_count,
-        posts_count: author.posts_count,
-        profile_link: author.profile_link
-      }
-    })
+    const authorsWithPlatform = await Promise.all(
+      authors.map(async (author) => {
+        // Find the first post by this author to get their platform
+        const authorPost = await Post.findOne(
+          { author_id: author.author_id },
+          { platform: 1 }
+        ).lean();
 
-    const authorInfo = await Promise.all(authorInfoPromises)
+        return {
+          ...author,
+          platform: authorPost?.platform || 'Unknown'
+        };
+      })
+    );
 
     return {
-      authors: authorInfo,
+      authors: authorsWithPlatform,
       totalAuthors
-    }
+    };
   } catch (error) {
-    console.error('❌ Error fetching authors:', error)
-    return { authors: [], totalAuthors: 0 }
+    console.error('Error in getAllAuthorsInfo:', error);
+    throw error;
   }
 }
 
