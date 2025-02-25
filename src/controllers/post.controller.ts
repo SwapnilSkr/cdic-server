@@ -12,6 +12,7 @@ import {
   getPostDetailsService,
   getTodayMostDiscussedFeedWithTopics,
   getReviewedPostsService,
+  fetchAndStoreGoogleNewsPosts,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -44,6 +45,7 @@ export const uploadPosts = async (
       await fetchAndStoreInstagramPosts(topicData.name, topic._id as unknown as string);
       await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
       await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
+      await fetchAndStoreGoogleNewsPosts(topicData.name, topic._id as unknown as string);
     } else {
       console.log("❌ Topic is not active");
     }

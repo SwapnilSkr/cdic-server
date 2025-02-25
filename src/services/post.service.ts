@@ -1,16 +1,18 @@
 import axios from "axios";
 import Post, { IPost } from "../models/post.model";
-import { createInstagramAuthor, createYoutubeAuthor, createTwitterAuthor } from "./author.service";
+import { createInstagramAuthor, createYoutubeAuthor, createTwitterAuthor, createNewsAuthor } from "./author.service";
 import Author, { IAuthor } from "../models/author.model";
 import mongoose from "mongoose";
 import { IUser } from "../models/user.model";
 import {TopicModel, Topic} from "../models/topic.model";
+import {getJson} from "serpapi";
 
 const MAX_POSTS = 200;
 
 /**
- * Fetch and store Instagram posts recursively until MAX_POSTS (10) is reached.
+ * Fetch and store Instagram posts recursively until MAX_POSTS (100) is reached.
  * @param keyword - The hashtag keyword for fetching posts.
+ * @param topicId - The topic ID associated with these posts.
  */
 export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: string): Promise<void> => {
   let totalPostsStored = 0;
@@ -18,9 +20,9 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
 
   try {
     while (totalPostsStored < MAX_POSTS) {
-      let url = `${process.env.HIKER_API_URL_V2}/hashtag/medias/recent?name=${keyword}`;
+      let url = `${process.env.HIKER_API_URL_V2}/search/topsearch?query=${keyword}`;
       if (nextPageId) {
-        url += `&page_id=${nextPageId}`;
+        url += `&next_max_id=${nextPageId}`;
       }
 
       console.log(`🔄 Fetching from: ${url}`);
@@ -34,21 +36,19 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
 
       const data = response.data;
 
-      // Debug log to check response structure
       console.log("📊 Response Data Structure:", {
-        hasResponse: !!data.response,
-        sectionsCount: data.response?.sections?.length || 0,
+        hasResponse: !!data,
+        sectionsCount: data.media_grid?.sections?.length || 0,
       });
 
-      if (!data.response || !data.response.sections) {
+      if (!data.media_grid || !data.media_grid.sections) {
         console.error("⚠️ Invalid API response format");
         break;
       }
 
       const postsData: IPost[] = [];
-      let foundPosts = false;
 
-      for (const section of data.response.sections) {
+      for (const section of data.media_grid.sections) {
         console.log("📑 Section Structure:", {
           layoutType: section.layout_type,
           hasClips: !!section.layout_content?.one_by_two_item?.clips?.items,
@@ -66,13 +66,13 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
           if (totalPostsStored >= MAX_POSTS) break;
 
           const media = item.media || {};
-          const postId = media.id; // Use media.id as post_id
+          const postId = media.id;
 
           // Check if post already exists
           const existingPost = await Post.findOne({ post_id: postId });
           if (existingPost) {
             console.log(`⚠️ Skipping post ${postId} as it already exists.`);
-            continue; // Skip if post already exists
+            continue;
           }
 
           const user = media.user || {};
@@ -84,8 +84,6 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
             console.log("⚠️ Skipping post due to author creation failure");
             continue;
           }
-
-          foundPosts = true;
 
           const postTimestamp = media.taken_at
             ? new Date(media.taken_at * 1000)
@@ -101,8 +99,8 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
           postsData.push(
             new Post({
               platform: "Instagram",
-              post_id: postId, // Store post ID
-              author_id: author.author_id, // Store author ID
+              post_id: postId,
+              author_id: author.author_id,
               profile_pic: user.profile_pic_url || "",
               username: user.username || "",
               caption: caption.text || "",
@@ -113,31 +111,29 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
               viewsCount, // Store views count
               created_at: postTimestamp,
               post_url: postUrl,
-              topic_ids: [topicId], // Add topic reference
+              topic_ids: [topicId],
             })
           );
         }
       }
 
       // Extract next page ID
-      nextPageId = data.response?.next_page_id || data.next_page_id || null;
+      nextPageId = data.media_grid?.next_max_id || null;
       console.log("📄 Next page ID:", nextPageId);
 
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
         console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`);
-      } else {
-        console.log("⚠️ No new posts found.");
-      }
-
-      if (!foundPosts) {
-        console.log("🚀 No more valid posts found. Stopping.");
+      } else if (!nextPageId) {
+        console.log("🚀 No more posts available from API");
         break;
+      } else {
+        console.log("⚠️ No new posts in this batch, trying next page");
       }
 
-      if (!nextPageId || totalPostsStored >= MAX_POSTS) {
-        console.log("🚀 Fetching complete!");
+      if (totalPostsStored >= MAX_POSTS) {
+        console.log("🚀 Reached maximum posts limit!");
         break;
       }
     }
@@ -150,6 +146,7 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
 /**
  * Fetch and store YouTube videos recursively until MAX_POSTS (100) is reached.
  * @param keyword - The search keyword for fetching videos.
+ * @param topicId - The topic ID associated with these videos.
  */
 export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: string): Promise<void> => {
   try {
@@ -244,6 +241,7 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
 /**
  * Fetch and store Twitter posts recursively until MAX_POSTS (10) is reached.
  * @param keyword - The search keyword for fetching posts.
+ * @param topicId - The topic ID associated with these posts.
  */
 export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string): Promise<void> => {
   try {
@@ -365,18 +363,136 @@ interface FilterOptions {
   keyword?: string;
 }
 
+/**
+ * Fetch and store Google News posts until MAX_POSTS (50) is reached.
+ * @param keyword - The keyword to search for.
+ * @param topicId - The topic ID associated with these posts.
+ */
+export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: string): Promise<void> => {
+  let totalPostsStored = 0;
+  let startIndex = 0; // For pagination
+
+  try {
+    while (totalPostsStored < MAX_POSTS) {
+      console.log(`🔄 Fetching Google News for keyword: ${keyword} (startIndex: ${startIndex})`);
+
+      const response = await getJson({
+        engine: "google_news",
+        q: keyword,
+        gl: "us",
+        hl: "en",
+        start: startIndex, // Add pagination parameter
+        api_key: process.env.SERP_API_KEY || ""
+      });
+
+      const newsResults = response.news_results;
+
+      if (!newsResults || !Array.isArray(newsResults) || newsResults.length === 0) {
+        console.log("⚠️ No more news results available or invalid response format");
+        break;
+      }
+
+      console.log(`📊 Found ${newsResults.length} news articles`);
+
+      const postsData: IPost[] = [];
+
+      for (const article of newsResults) {
+        if (totalPostsStored >= MAX_POSTS) break;
+
+        const postId = article.link; // Use article URL as unique post_id
+
+        // Check if post already exists
+        const existingPost = await Post.findOne({ post_id: postId });
+        if (existingPost) {
+          console.log(`⚠️ Skipping article ${postId} as it already exists.`);
+          continue;
+        }
+
+        // Create a news author from the source
+        const newsSource = article.source || null;
+        if (!newsSource.name) {
+          console.log("⚠️ Skipping article due to invalid source");
+          continue;
+        }
+        const author = await createNewsAuthor(newsSource);
+        if (!author) {
+          console.log("⚠️ Skipping article due to author creation failure");
+          continue;
+        }
+
+        const postTimestamp = new Date(article.date || new Date());
+
+        postsData.push(
+          new Post({
+            platform: "GoogleNews",
+            post_id: postId,
+            author_id: author.author_id,
+            profile_pic: article.source?.icon || "", // Use source icon if available
+            username: newsSource.name,
+            caption: article.title,
+            image_url: article.thumbnail || "",
+            created_at: postTimestamp,
+            post_url: article.link,
+            likesCount: 0, // News articles don't have likes
+            commentsCount: 0,
+            viewsCount: 0,
+            topic_ids: [topicId],
+          })
+        );
+      }
+
+      if (postsData.length > 0) {
+        await Post.insertMany(postsData);
+        totalPostsStored += postsData.length;
+        console.log(`✅ Stored ${postsData.length} news articles (Total: ${totalPostsStored}/${MAX_POSTS})`);
+      } else {
+        console.log("⚠️ No new articles found");
+        break;
+      }
+
+      if (totalPostsStored >= MAX_POSTS) {
+        console.log("🚀 Reached maximum posts limit!");
+        break;
+      }
+
+      // Update startIndex for next page (typically Google uses 10 results per page)
+      startIndex += newsResults.length;
+      
+      // Add a small delay to avoid rate limiting
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    console.log("🚀 Google News fetching complete!");
+  } catch (error) {
+    console.error("❌ Error fetching or storing data:", error);
+    throw error;
+  }
+};
+
 export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions, userId: string) => {
   try {
     // Build base query for filters
     const baseQuery: any = {};
     
-    // Add keyword search across multiple fields
+    // Process keyword with Boolean search syntax
     if (filters.keyword) {
-      baseQuery.$or = [
-        { platform: { $regex: filters.keyword, $options: 'i' } },
-        { username: { $regex: filters.keyword, $options: 'i' } },
-        { caption: { $regex: filters.keyword, $options: 'i' } }
-      ];
+      // If we have a keyword, we'll focus the search on the caption field
+      // using the Boolean search syntax
+      const searchQuery = processBooleanSearch(filters.keyword);
+      
+      // Apply the search query to the caption field
+      if (searchQuery) {
+        // Instead of assigning directly to baseQuery.caption,
+        // we merge the search query with the base query
+        Object.assign(baseQuery, searchQuery);
+      } else {
+        // Fallback to simple search if Boolean parsing fails
+        baseQuery.$or = [
+          { platform: { $regex: filters.keyword, $options: 'i' } },
+          { username: { $regex: filters.keyword, $options: 'i' } },
+          { caption: { $regex: filters.keyword, $options: 'i' } }
+        ];
+      }
     }
     
     if (filters.platforms && filters.platforms.length > 0) {
@@ -395,6 +511,8 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
       baseQuery.flagged = filters.flagStatus === 'flagged';
       baseQuery.flaggedBy = { $in: [userId] };
     }
+
+    console.log("Final query:", JSON.stringify(baseQuery, null, 2));
 
     // Get total counts first (unaffected by pagination)
     const totalPosts = await Post.countDocuments(baseQuery);
@@ -428,6 +546,221 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
     throw error;
   }
 };
+
+/**
+ * Process a Boolean search query string into a MongoDB query object
+ * Supports: AND, OR, NOT, exact phrases with quotes, grouping with parentheses
+ * @param query - The Boolean query string to process
+ * @returns MongoDB query object or null if parsing fails
+ */
+function processBooleanSearch(query: string): any {
+  try {
+    // Track the current position in parsing
+    let position = 0;
+    
+    // Main parsing function that handles the query string
+    function parseExpression(): any {
+      // Skip whitespace
+      while (position < query.length && /\s/.test(query[position])) {
+        position++;
+      }
+      
+      if (position >= query.length) return null;
+      
+      // Parse OR expressions (lowest precedence)
+      const left = parseAND();
+      if (position < query.length) {
+        // Look for OR operator
+        if (position + 2 < query.length && 
+            query.substring(position, position + 2).toUpperCase() === "OR" && 
+            /\s/.test(query[position + 2])) {
+          position += 3; // Skip "OR" and the space
+          const right = parseExpression();
+          if (right) {
+            return { $or: [left, right] };
+          }
+        }
+      }
+      
+      return left;
+    }
+    
+    // Parse AND expressions (medium precedence)
+    function parseAND(): any {
+      // Parse NOT expressions first (higher precedence)
+      let left = parseNOT();
+      
+      // Look for AND operator
+      while (position < query.length) {
+        // Skip whitespace
+        while (position < query.length && /\s/.test(query[position])) {
+          position++;
+        }
+        
+        if (position + 3 < query.length && 
+            query.substring(position, position + 3).toUpperCase() === "AND" && 
+            /\s/.test(query[position + 3])) {
+          position += 4; // Skip "AND" and the space
+          const right = parseNOT();
+          if (right) {
+            // Create a proper $and array with both conditions
+            if (left.$and) {
+              // If left already has $and, add right to it
+              left.$and.push(right);
+            } else {
+              // Otherwise create a new $and array
+              left = { $and: [left, right] };
+            }
+          }
+        } else {
+          break;
+        }
+      }
+      
+      return left;
+    }
+    
+    // Parse NOT expressions (high precedence)
+    function parseNOT(): any {
+      // Skip whitespace
+      while (position < query.length && /\s/.test(query[position])) {
+        position++;
+      }
+      
+      // Check for NOT operator
+      if (position + 3 < query.length && 
+          query.substring(position, position + 3).toUpperCase() === "NOT" && 
+          /\s/.test(query[position + 3])) {
+        position += 4; // Skip "NOT" and the space
+        const expr = parseTerm();
+        if (expr) {
+          // Create a proper $not query
+          // MongoDB doesn't allow $not with a document, so we need to handle this differently
+          // We'll use $nor which is equivalent to NOT in this case
+          return { $nor: [expr] };
+        }
+      }
+      
+      return parseTerm();
+    }
+    
+    // Parse basic terms (highest precedence)
+    function parseTerm(): any {
+      // Skip whitespace
+      while (position < query.length && /\s/.test(query[position])) {
+        position++;
+      }
+      
+      if (position >= query.length) return null;
+      
+      // Handle parentheses for grouping
+      if (query[position] === '(') {
+        position++; // Skip opening parenthesis
+        const expr = parseExpression();
+        
+        // Skip whitespace
+        while (position < query.length && /\s/.test(query[position])) {
+          position++;
+        }
+        
+        if (position < query.length && query[position] === ')') {
+          position++; // Skip closing parenthesis
+          return expr;
+        } else {
+          throw new Error("Missing closing parenthesis");
+        }
+      }
+      
+      // Handle quoted phrases
+      if (query[position] === '"') {
+        position++; // Skip opening quote
+        let phrase = "";
+        
+        while (position < query.length && query[position] !== '"') {
+          phrase += query[position];
+          position++;
+        }
+        
+        if (position < query.length) {
+          position++; // Skip closing quote
+          // Return a proper regex query object
+          return { caption: { $regex: escapeRegExp(phrase), $options: 'i' } };
+        } else {
+          throw new Error("Missing closing quote");
+        }
+      }
+      
+      // Handle NEAR operator
+      const nearRegex = /^(\w+)\s+NEAR\/(\d+)\s+(\w+)/i;
+      const nearSubstring = query.substring(position);
+      const nearMatch = nearSubstring.match(nearRegex);
+      
+      if (nearMatch) {
+        const word1 = nearMatch[1];
+        const distance = parseInt(nearMatch[2]);
+        const word2 = nearMatch[3];
+        
+        // Skip the matched NEAR expression
+        position += nearMatch[0].length;
+        
+        // For NEAR, we create a regex that matches both words within N words of each other
+        const pattern = `\\b${escapeRegExp(word1)}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(word2)}\\b|\\b${escapeRegExp(word2)}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(word1)}\\b`;
+        return { caption: { $regex: pattern, $options: 'i' } };
+      }
+      
+      // Handle wildcards
+      let term = "";
+      let hasWildcard = false;
+      
+      while (position < query.length && 
+             !/[\s()"]/.test(query[position]) && 
+             !query.substring(position).match(/^(AND|OR|NOT)\b/i)) {
+        if (query[position] === '*') {
+          hasWildcard = true;
+        }
+        term += query[position];
+        position++;
+      }
+      
+      if (!term) return null;
+      
+      // Process wildcards
+      if (hasWildcard) {
+        const pattern = escapeRegExp(term).replace(/\\\*/g, '.*');
+        return { caption: { $regex: pattern, $options: 'i' } };
+      }
+      
+      // Regular term
+      return { caption: { $regex: escapeRegExp(term), $options: 'i' } };
+    }
+    
+    // Helper function to escape special regex characters
+    function escapeRegExp(string: string): string {
+      return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    
+    // Let's add some debugging to see what's going on
+    console.log("🔍 Original query:", query);
+    const result = parseExpression();
+    console.log("🔍 Parsed query object:", JSON.stringify(result, null, 2));
+    
+    // One final check to ensure we have a valid MongoDB query object
+    if (result === null) {
+      return { caption: { $regex: escapeRegExp(query), $options: 'i' } };
+    }
+    
+    return result;
+  } catch (error) {
+    console.error("❌ Error parsing Boolean search:", error, "Query:", query);
+    // Fallback to simple search on error
+    return { caption: { $regex: escapeRegExp(query), $options: 'i' } };
+  }
+}
+
+// Move this helper function outside the main function to make it accessible
+function escapeRegExp(string: string): string {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export const togglePostFlagService = async (postId: string, userId: string) => {
   try {
@@ -681,8 +1014,8 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
       topics.map(async (topic) => {
         const posts = await Post.find({
           created_at: { 
-            $gte: utcToday, 
-            $lt: utcTomorrow 
+            $gte: utcToday,
+            $lt: utcTomorrow
           },
           topic_ids: { $in: topic._id }
         }).sort({
@@ -715,7 +1048,6 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
 
     // Sort topics by total engagement and get top 10
     const sortedTopics = topicPosts
-      .filter(topic => topic.totalEngagement > 0)
       .sort((a, b) => b.totalEngagement - a.totalEngagement)
       .slice(0, 10);
 

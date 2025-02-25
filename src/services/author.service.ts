@@ -118,6 +118,33 @@ export const createTwitterAuthor = async (userId: string): Promise<IAuthor | nul
   }
 };
 
+export const createNewsAuthor = async (source: {name: string, icon: string}): Promise<IAuthor | null> => {
+  try {
+    // Check if author already exists
+    const existingAuthor = await Author.findOne({ author_id: source.name});
+    if (existingAuthor) {
+      return existingAuthor;
+    }
+
+    // Create new author
+    const author = new Author({
+      author_id: source.name,
+      username: source.name,
+      profile_pic: source.icon ? source.icon : "",
+      followers_count: 0,
+      posts_count: 0,
+      profile_link: `https://www.google.com/search?q=${source.name}`
+    });
+
+    await author.save();
+    console.log(`✅ Created author: ${source.name}`);
+    return author;
+  } catch (error) {
+    console.error('❌ Error creating author:', error);
+    return null;
+  }
+};
+
 export const getAllAuthorsInfo = async (
   page: number, 
   limit: number, 
