@@ -21,6 +21,8 @@ export interface IPost extends Document {
   flagTimestamp: Date | null;
   flaggedStatus: 'pending' | 'reviewed' | 'escalated' | null;
   topic_ids: mongoose.Types.ObjectId[]; // New field for topic references
+  dismissed: boolean; // Global dismiss flag
+  dismissTimestamp: Date | null;
 }
 
 // MongoDB Schema & Model
@@ -48,6 +50,8 @@ const postSchema = new Schema<IPost>({
     default: null 
   },
   topic_ids: [{ type: mongoose.Schema.Types.ObjectId, ref: "Topic" }], // New field for topic references
+  dismissed: { type: Boolean, default: false },
+  dismissTimestamp: { type: Date, default: null },
 });
 
 const Post = mongoose.model<IPost>("Post", postSchema);

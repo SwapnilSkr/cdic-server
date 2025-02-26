@@ -19,7 +19,7 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
   let nextPageId: string | null = null;
 
   try {
-    while (totalPostsStored < MAX_POSTS) {
+    while (totalPostsStored < 10) {
       let url = `${process.env.HIKER_API_URL_V2}/search/topsearch?query=${keyword}`;
       if (nextPageId) {
         url += `&next_max_id=${nextPageId}`;
@@ -63,7 +63,7 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
         console.log(`🔍 Found ${allMedias.length} total media items`);
 
         for (const item of allMedias) {
-          if (totalPostsStored >= MAX_POSTS) break;
+          if (totalPostsStored >= 10) break;
 
           const media = item.media || {};
           const postId = media.id;
@@ -117,22 +117,23 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
         }
       }
 
-      // Extract next page ID
+      // Extract next page ID and check if more content is available
       nextPageId = data.media_grid?.next_max_id || null;
-      console.log("📄 Next page ID:", nextPageId);
+      const hasMore = data.media_grid?.has_more === true;
+      console.log("📄 Next page ID:", nextPageId, "Has more:", hasMore);
 
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
-        console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`);
-      } else if (!nextPageId) {
+        console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${10})`);
+      } else if (!nextPageId || !hasMore) {
         console.log("🚀 No more posts available from API");
         break;
       } else {
-        console.log("⚠️ No new posts in this batch, trying next page");
+        console.log("⚠️ No new posts in this batch, but more content available. Continuing to next page.");
       }
 
-      if (totalPostsStored >= MAX_POSTS) {
+      if (totalPostsStored >= 10) {
         console.log("🚀 Reached maximum posts limit!");
         break;
       }
@@ -424,7 +425,7 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
 
         postsData.push(
           new Post({
-            platform: "GoogleNews",
+            platform: "News",
             post_id: postId,
             author_id: author.author_id,
             profile_pic: article.source?.icon || "", // Use source icon if available
@@ -472,7 +473,12 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
 export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions, userId: string) => {
   try {
     // Build base query for filters
-    const baseQuery: any = {};
+    const baseQuery: any = {
+      $or: [
+        { dismissed: false },
+        { dismissed: { $exists: false } } // Include posts where dismissed field doesn't exist
+      ]
+    };
     
     // Process keyword with Boolean search syntax
     if (filters.keyword) {
@@ -517,6 +523,21 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
     // Get total counts first (unaffected by pagination)
     const totalPosts = await Post.countDocuments(baseQuery);
     const totalFlaggedPosts = await Post.countDocuments({ ...baseQuery, flagged: true });
+    
+    // Get total counts without filters (but still excluding dismissed posts)
+    const totalAllPosts = await Post.countDocuments({ 
+      $or: [
+        { dismissed: false },
+        { dismissed: { $exists: false } }
+      ]
+    });
+    const totalAllFlagged = await Post.countDocuments({ 
+      $or: [
+        { dismissed: false },
+        { dismissed: { $exists: false } }
+      ],
+      flagged: true 
+    });
 
     // Then get paginated data
     let query = Post.find(baseQuery);
@@ -527,6 +548,8 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
         likesCount: -1,
         commentsCount: -1
       });
+    } else if (filters.sortBy === 'oldest') {
+      query = query.sort({ created_at: 1 });
     } else {
       query = query.sort({ created_at: -1 });
     }
@@ -534,12 +557,12 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
     // Apply pagination to data fetch only
     const posts = await query.skip(skip).limit(limit).exec();
 
-    return { 
+    return {
       posts,
-      totalPosts,        // Total count with filters
-      totalFlaggedPosts, // Total flagged count with filters
-      totalAllPosts: await Post.countDocuments({}),  // Total posts without any filters
-      totalAllFlagged: await Post.countDocuments({ flagged: true }) // Total flagged without filters
+      totalPosts,
+      totalFlaggedPosts,
+      totalAllPosts,
+      totalAllFlagged
     };
   } catch (error) {
     console.error("❌ Error fetching posts:", error);
@@ -1088,6 +1111,56 @@ export const getReviewedPostsService = async (limit: number = 10) => {
     };
   } catch (error) {
     console.error("❌ Error fetching reviewed posts:", error);
+    throw error;
+  }
+};
+
+/**
+ * Rename all posts with platform "GoogleNews" to "News"
+ * @returns Object containing the count of updated posts
+ */
+export const renamePlatformGoogleNewsToNews = async (): Promise<{ updatedCount: number }> => {
+  try {
+    console.log("🔄 Starting platform rename operation: GoogleNews → News");
+    
+    // Find and update all posts with platform "GoogleNews"
+    const result = await Post.updateMany(
+      { platform: "Google News" },
+      { $set: { platform: "News" } }
+    );
+    
+    console.log(`✅ Successfully renamed ${result.modifiedCount} posts from GoogleNews to News`);
+    
+    return {
+      updatedCount: result.modifiedCount
+    };
+  } catch (error) {
+    console.error("❌ Error renaming platform:", error);
+    throw error;
+  }
+};
+
+export const dismissPostService = async (postId: string) => {
+  try {
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw new Error('Post not found');
+    }
+
+    // Toggle the dismissed state
+    post.dismissed = !post.dismissed;
+    
+    // Update timestamp if being dismissed
+    if (post.dismissed) {
+      post.dismissTimestamp = new Date();
+    } else {
+      post.dismissTimestamp = null;
+    }
+
+    await post.save();
+    return post;
+  } catch (error) {
+    console.error("❌ Error dismissing post:", error);
     throw error;
   }
 };

@@ -13,6 +13,8 @@ import {
   getTodayMostDiscussedFeedWithTopics,
   getReviewedPostsService,
   fetchAndStoreGoogleNewsPosts,
+  renamePlatformGoogleNewsToNews,
+  dismissPostService,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -42,10 +44,10 @@ export const uploadPosts = async (
 
     if (topic && topic.active) {
       // Pass topic name to fetch functions
-      await fetchAndStoreInstagramPosts(topicData.name, topic._id as unknown as string);
       await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
       await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
       await fetchAndStoreGoogleNewsPosts(topicData.name, topic._id as unknown as string);
+      await fetchAndStoreInstagramPosts(topicData.name, topic._id as unknown as string);
     } else {
       console.log("❌ Topic is not active");
     }
@@ -102,6 +104,8 @@ export const getAllStoredPosts = async (
         views: post.viewsCount || 0,
         comments: post.commentsCount || 0,
       },
+      image_url: post.image_url,
+      post_url: post.post_url,
       flaggedBy: post.flaggedBy,
       timestamp: post.created_at,
       content: post.caption,
@@ -278,6 +282,48 @@ export const getReviewedPosts = async (
     res.status(200).json(posts);
   } catch (error) {
     console.error("❌ Error in getReviewedPosts controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+/**
+ * Rename all posts with platform "GoogleNews" to "News"
+ * @route PUT /api/posts/rename-platform
+ * @access Admin only
+ */
+export const renamePlatformController = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const result = await renamePlatformGoogleNewsToNews();
+    
+    res.status(200).json({
+      success: true,
+      message: `Successfully renamed ${result.updatedCount} posts from GoogleNews to News`,
+      data: result
+    });
+  } catch (error) {
+    console.error("❌ Controller error renaming platform:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to rename platform",
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
+};
+
+export const dismissPost = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { postId } = req.params;
+    
+    const updatedPost = await dismissPostService(postId);
+    res.status(200).json({ 
+      message: "Post dismiss status updated successfully",
+      dismissed: updatedPost.dismissed 
+    });
+  } catch (error) {
+    console.error("❌ Error in dismissPost controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
