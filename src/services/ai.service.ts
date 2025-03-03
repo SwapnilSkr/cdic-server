@@ -97,3 +97,33 @@ export const generateResponse = async (
     throw new Error('Failed to generate AI response');
   }
 }; 
+
+export const convertSearchQueryToHashtag = async (searchQuery: string) => {
+  const prompt = `Convert the following search query to a hashtag: ${searchQuery}
+  The conversion should be done in a way that is easy to search for on Instagram.
+  No need to convert it in the exact format of the search query, just make it a hashtag optimized for Instagram search.
+  Return only the hashtag, no other text or explanation.
+  `;
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+    });
+
+    // Extract the content from the completion
+    let content = completion.choices[0].message.content;
+    
+    // Remove hashtag symbol if present
+    if (content && content.startsWith('#')) {
+      content = content.substring(1);
+    }
+    
+    // Ensure it's a single word (remove spaces)
+    content = content ? content.trim().replace(/\s+/g, '') : null;
+
+    return content;
+  } catch (error) {
+    console.error('Error converting search query to hashtag:', error);
+    throw error;
+  }
+};

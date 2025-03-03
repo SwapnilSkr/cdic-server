@@ -18,6 +18,7 @@ import {
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
+import { convertSearchQueryToHashtag } from "../services/ai.service";
 /**
  * Controller to handle uploading all posts.
  */
@@ -42,12 +43,16 @@ export const uploadPosts = async (
       topic = await createTopic(topicData);
     }
 
+    const hashtag = await convertSearchQueryToHashtag(topicData.name);
+
     if (topic && topic.active) {
       // Pass topic name to fetch functions
       await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
       await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
       await fetchAndStoreGoogleNewsPosts(topicData.name, topic._id as unknown as string);
-      await fetchAndStoreInstagramPosts(topicData.name, topic._id as unknown as string);
+      if (hashtag) {
+        await fetchAndStoreInstagramPosts(hashtag, topic._id as unknown as string);
+      }
     } else {
       console.log("❌ Topic is not active");
     }

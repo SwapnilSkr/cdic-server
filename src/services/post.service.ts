@@ -19,10 +19,10 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
   let nextPageId: string | null = null;
 
   try {
-    while (totalPostsStored < 10) {
-      let url = `${process.env.HIKER_API_URL_V2}/search/topsearch?query=${keyword}`;
+    while (totalPostsStored < MAX_POSTS) {
+      let url = `${process.env.HIKER_API_URL_V2}/hashtag/medias/recent?name=${keyword}`;
       if (nextPageId) {
-        url += `&next_max_id=${nextPageId}`;
+        url += `&page_id=${nextPageId}`;
       }
 
       console.log(`🔄 Fetching from: ${url}`);
@@ -37,18 +37,19 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
       const data = response.data;
 
       console.log("📊 Response Data Structure:", {
-        hasResponse: !!data,
-        sectionsCount: data.media_grid?.sections?.length || 0,
+        hasResponse: !!data.response,
+        sectionsCount: data.response?.sections?.length || 0,
       });
 
-      if (!data.media_grid || !data.media_grid.sections) {
+      if (!data.response || !data.response.sections) {
         console.error("⚠️ Invalid API response format");
         break;
       }
 
       const postsData: IPost[] = [];
+      let foundPosts = false;
 
-      for (const section of data.media_grid.sections) {
+      for (const section of data.response.sections) {
         console.log("📑 Section Structure:", {
           layoutType: section.layout_type,
           hasClips: !!section.layout_content?.one_by_two_item?.clips?.items,
@@ -63,7 +64,7 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
         console.log(`🔍 Found ${allMedias.length} total media items`);
 
         for (const item of allMedias) {
-          if (totalPostsStored >= 10) break;
+          if (totalPostsStored >= MAX_POSTS) break;
 
           const media = item.media || {};
           const postId = media.id;
@@ -84,6 +85,8 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
             console.log("⚠️ Skipping post due to author creation failure");
             continue;
           }
+
+          foundPosts = true;
 
           const postTimestamp = media.taken_at
             ? new Date(media.taken_at * 1000)
@@ -117,24 +120,25 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
         }
       }
 
-      // Extract next page ID and check if more content is available
-      nextPageId = data.media_grid?.next_max_id || null;
-      const hasMore = data.media_grid?.has_more === true;
-      console.log("📄 Next page ID:", nextPageId, "Has more:", hasMore);
+      // Extract next page ID
+      nextPageId = data.response?.next_page_id || data.next_page_id || null;
+      console.log("📄 Next page ID:", nextPageId);
 
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
-        console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${10})`);
-      } else if (!nextPageId || !hasMore) {
-        console.log("🚀 No more posts available from API");
-        break;
+        console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`);
       } else {
-        console.log("⚠️ No new posts in this batch, but more content available. Continuing to next page.");
+        console.log("⚠️ No new posts found.");
       }
 
-      if (totalPostsStored >= 10) {
-        console.log("🚀 Reached maximum posts limit!");
+      if (!foundPosts) {
+        console.log("🚀 No more valid posts found. Stopping.");
+        break;
+      }
+
+      if (!nextPageId || totalPostsStored >= MAX_POSTS) {
+        console.log("🚀 Fetching complete!");
         break;
       }
     }
