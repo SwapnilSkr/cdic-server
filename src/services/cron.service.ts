@@ -1,3 +1,4 @@
+import cron from 'node-cron';
 import { TopicModel } from '../models/topic.model';
 import { 
   fetchAndStoreInstagramPosts, 
@@ -59,24 +60,18 @@ export const fetchAllTopics = async (): Promise<void> => {
 };
 
 /**
- * Initialize scheduled jobs
+ * Initialize all cron jobs
  */
 export const initCronJobs = (): void => {
-  console.log('⏰ Scheduled jobs initialized');
+  // Schedule the job to run every 2 hours
+  // Cron format: second(0-59) minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6)
+  cron.schedule('0 0 */2 * * *', async () => {
+    console.log('⏰ Running scheduled job: Fetch all topics');
+    await fetchAllTopics();
+  });
   
-  // Define the interval in milliseconds (2 hours)
-  const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+  console.log('⏰ Cron jobs initialized');
   
-  // Run immediately on startup (optional)
-  // fetchAllTopics().catch(err => console.error('Error in initial fetch:', err));
-  
-  // Set up the interval to run exactly every 2 hours
-  setInterval(async () => {
-    console.log(`⏰ Running scheduled job at ${new Date().toISOString()}: Fetch all topics`);
-    try {
-      await fetchAllTopics();
-    } catch (error) {
-      console.error('Error in scheduled fetch:', error);
-    }
-  }, TWO_HOURS_MS);
+  // Optionally run immediately on startup
+  // fetchAllTopics();
 }; 
