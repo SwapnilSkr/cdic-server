@@ -415,8 +415,8 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
 
         // Create a news author from the source
         const newsSource = article.source || null;
-        if (!newsSource.name) {
-          console.log("⚠️ Skipping article due to invalid source");
+        if (!newsSource || !newsSource.name) {
+          console.log("⚠️ Skipping article due to invalid source:", article.title);
           continue;
         }
         const author = await createNewsAuthor(newsSource);

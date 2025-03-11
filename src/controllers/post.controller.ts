@@ -19,6 +19,7 @@ import {
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
 import { convertSearchQueryToHashtag } from "../services/ai.service";
+import { fetchAllTopics } from "../services/cron.service";
 /**
  * Controller to handle uploading all posts.
  */
@@ -329,6 +330,27 @@ export const dismissPost = async (
     });
   } catch (error) {
     console.error("❌ Error in dismissPost controller:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+export const triggerFetchAllTopics = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    // Start the fetch process asynchronously
+    fetchAllTopics().catch(error => {
+      console.error("❌ Error in background fetch process:", error);
+    });
+    
+    // Immediately return success response since this will run in the background
+    res.status(200).json({ 
+      message: "Fetch process for all topics started successfully",
+      note: "This process runs in the background and may take some time to complete"
+    });
+  } catch (error) {
+    console.error("❌ Error triggering fetch all topics:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };

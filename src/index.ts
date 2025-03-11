@@ -8,6 +8,7 @@ import authorRouter from "./routers/author.route";
 import aiRouter from "./routers/ai.route";
 import userRouter from "./routers/user.route";
 import auditRouter from "./routers/audit.route";
+import { initCronJobs } from "./services/cron.service";
 
 dotenv.config();
 
@@ -35,6 +36,9 @@ app.use("/api/audit", auditRouter);
 // Connect to MongoDB
 connectDB()
   .then(() => {
+    // Initialize cron jobs after database connection is established
+    initCronJobs();
+    
     app.listen(port, () => {
       console.log(`Server is running at http://localhost:${port}`);
     });
