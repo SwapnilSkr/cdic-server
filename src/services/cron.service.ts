@@ -1,4 +1,3 @@
-import cron from 'node-cron';
 import { TopicModel } from '../models/topic.model';
 import { 
   fetchAndStoreInstagramPosts, 
@@ -21,7 +20,7 @@ const fetchPostsForTopic = async (topicName: string, topicId: string): Promise<v
     const hashtag = await convertSearchQueryToHashtag(topicName);
     
     // Fetch from all platforms in sequence
-    await fetchAndStoreYoutubeVideos(topicName, topicId);
+    // await fetchAndStoreYoutubeVideos(topicName, topicId);
     await fetchAndStoreTwitterPosts(topicName, topicId);
     await fetchAndStoreGoogleNewsPosts(topicName, topicId);
     
@@ -60,18 +59,24 @@ export const fetchAllTopics = async (): Promise<void> => {
 };
 
 /**
- * Initialize all cron jobs
+ * Initialize scheduled jobs
  */
 export const initCronJobs = (): void => {
-  // Schedule the job to run every 2 hours
-  // Cron format: second(0-59) minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6)
-  cron.schedule('0 0 */2 * * *', async () => {
-    console.log('⏰ Running scheduled job: Fetch all topics');
-    await fetchAllTopics();
-  });
+  console.log('⏰ Scheduled jobs initialized');
   
-  console.log('⏰ Cron jobs initialized');
+  // Define the interval in milliseconds (2 hours)
+  const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
   
-  // Optionally run immediately on startup
-  // fetchAllTopics();
-}; 
+  // Run immediately on startup (optional)
+  // fetchAllTopics().catch(err => console.error('Error in initial fetch:', err));
+  
+  // Set up the interval to run exactly every 2 hours
+  setInterval(async () => {
+    console.log(`⏰ Running scheduled job at ${new Date().toISOString()}: Fetch all topics`);
+    try {
+      await fetchAllTopics();
+    } catch (error) {
+      console.error('Error in scheduled fetch:', error);
+    }
+  }, TWO_HOURS_MS);
+};
