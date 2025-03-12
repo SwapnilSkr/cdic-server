@@ -316,6 +316,12 @@ export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string
         const postUrl = `https://twitter.com/${tweet.user.screen_name}/status/${tweet.id_str}`;
         const createdAt = new Date(tweet.tweet_created_at);
 
+        // Extract image URL from entities.media if it exists
+        let imageUrl = "";
+        if (tweet.entities && tweet.entities.media && tweet.entities.media.length > 0) {
+          imageUrl = tweet.entities.media[0].media_url_https || "";
+        }
+
         postsData.push(
           new Post({
             platform: "Twitter",
@@ -324,6 +330,7 @@ export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string
             profile_pic: tweet.user.profile_image_url_https || "",
             username: tweet.user.screen_name,
             caption: tweet.full_text || "",
+            image_url: imageUrl, // Add the extracted image URL
             created_at: createdAt,
             post_url: postUrl,
             likesCount: tweet.favorite_count || 0,
