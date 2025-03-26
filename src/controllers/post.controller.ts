@@ -20,6 +20,7 @@ import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
 import { convertSearchQueryToHashtag } from "../services/ai.service";
 import { fetchAllTopics } from "../services/cron.service";
+
 /**
  * Controller to handle uploading all posts.
  */
@@ -29,6 +30,13 @@ export const uploadPosts = async (
 ): Promise<void> => {
   try {
     const topicData = req.body;
+    const userId = req.user?.id;
+    const effectiveUserId = userId || topicData.createdBy;
+    
+    if (!effectiveUserId) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
     if (!topicData.name || typeof topicData.name !== "string") {
       res
         .status(400)
@@ -36,33 +44,39 @@ export const uploadPosts = async (
       return;
     }
 
-    // Create topic if active
     let topic : Topic | null = null;
-    if (topicData._id) {
-      topic = await updateTopic(topicData._id, topicData);
-    } else {
-      topic = await createTopic(topicData);
+    try {
+      if (topicData._id) {
+        topic = await updateTopic(topicData._id, topicData);
+      } else {
+        topic = await createTopic(topicData, effectiveUserId);
+      }
+    } catch (topicError) {
     }
 
-    const hashtag = await convertSearchQueryToHashtag(topicData.name);
+    let hashtag;
+    try {
+      hashtag = await convertSearchQueryToHashtag(topicData.name);
+    } catch (hashtagError) {
+    }
 
     if (topic && topic.active) {
-      // Pass topic name to fetch functions
-      // await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
-      await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
-      await fetchAndStoreGoogleNewsPosts(topicData.name, topic._id as unknown as string);
-      if (hashtag) {
-        await fetchAndStoreInstagramPosts(hashtag, topic._id as unknown as string);
+      try {
+        await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
+        await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
+        await fetchAndStoreGoogleNewsPosts(topicData.name, topic._id as unknown as string);
+        
+        if (hashtag) {
+          await fetchAndStoreInstagramPosts(hashtag, topic._id as unknown as string);
+        }
+      } catch (fetchError) {
       }
-    } else {
-      console.log("❌ Topic is not active");
     }
 
     res.status(200).json({
       message: "All posts fetched and stored successfully",
     });
   } catch (error) {
-    console.error("❌ Error in uploadPosts controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -79,7 +93,6 @@ export const getAllStoredPosts = async (
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     
-    // Parse filters from query params
     const filters = {
       platforms: req.query.platforms ? (req.query.platforms as string).split(',') : [],
       dateRange: req.query.dateRange ? JSON.parse(req.query.dateRange as string) : null,
@@ -125,17 +138,16 @@ export const getAllStoredPosts = async (
       pagination: {
         currentPage: page,
         totalPages,
-        totalPosts: totalAllPosts,     // Total unfiltered posts
-        totalFlaggedPosts: totalAllFlagged, // Total unfiltered flagged posts
-        filteredTotal: totalPosts,     // Total with current filters
-        filteredFlagged: totalFlaggedPosts, // Flagged with current filters
+        totalPosts: totalAllPosts,
+        totalFlaggedPosts: totalAllFlagged,
+        filteredTotal: totalPosts,
+        filteredFlagged: totalFlaggedPosts,
         limit,
         hasNextPage: page < totalPages,
         hasPrevPage: page > 1,
       },
     });
   } catch (error) {
-    console.error("❌ Error in getAllStoredPosts controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -159,7 +171,6 @@ export const togglePostFlag = async (
       flagged: updatedPost.flagged 
     });
   } catch (error) {
-    console.error("❌ Error in togglePostFlag controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -183,12 +194,13 @@ export const updatePostStatus = async (
       status: updatedPost.flaggedStatus
     });
   } catch (error) {
-    console.error("❌ Error in updatePostStatus controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
 
-// New controller function for platform statistics
+/**
+ * Controller function for platform statistics
+ */
 export const fetchPlatformStatistics = async (
   req: Request,
   res: Response
@@ -200,7 +212,6 @@ export const fetchPlatformStatistics = async (
       data: statistics,
     });
   } catch (error) {
-    console.error("❌ Error in fetchPlatformStatistics controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -216,7 +227,6 @@ export const getPostStats = async (
       data: stats,
     });
   } catch (error) {
-    console.error("❌ Error in getPostStats controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -241,7 +251,6 @@ export const getFlaggedPosts = async (
 
     res.status(200).json(result);
   } catch (error) {
-    console.error("❌ Error in getFlaggedPosts controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -257,7 +266,6 @@ export const getPostDetails = async (
     
     res.status(200).json(postDetails);
   } catch (error) {
-    console.error("❌ Error in getPostDetails controller:", error);
     if (error instanceof Error && error.message === 'Post not found') {
       res.status(404).json({ error: "Post not found" });
     } else {
@@ -274,7 +282,6 @@ export const getTodayMostDiscussedFeed = async (
     const feed = await getTodayMostDiscussedFeedWithTopics()
     res.status(200).json(feed);
   } catch (error) {
-    console.error("❌ Error in getTodayMostDiscussedFeed controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -287,7 +294,6 @@ export const getReviewedPosts = async (
     const posts = await getReviewedPostsService(10);
     res.status(200).json(posts);
   } catch (error) {
-    console.error("❌ Error in getReviewedPosts controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -307,7 +313,6 @@ export const renamePlatformController = async (req: Request, res: Response): Pro
       data: result
     });
   } catch (error) {
-    console.error("❌ Controller error renaming platform:", error);
     res.status(500).json({
       success: false,
       message: "Failed to rename platform",
@@ -329,7 +334,6 @@ export const dismissPost = async (
       dismissed: updatedPost.dismissed 
     });
   } catch (error) {
-    console.error("❌ Error in dismissPost controller:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };
@@ -339,18 +343,13 @@ export const triggerFetchAllTopics = async (
   res: Response
 ): Promise<void> => {
   try {
-    // Start the fetch process asynchronously
-    fetchAllTopics().catch(error => {
-      console.error("❌ Error in background fetch process:", error);
-    });
+    fetchAllTopics().catch(error => {});
     
-    // Immediately return success response since this will run in the background
     res.status(200).json({ 
       message: "Fetch process for all topics started successfully",
       note: "This process runs in the background and may take some time to complete"
     });
   } catch (error) {
-    console.error("❌ Error triggering fetch all topics:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 };

@@ -14,18 +14,22 @@ export interface Topic extends Document {
   sentimentHistory: any[]; // Adjust type as necessary
 }
 
-const topicSchema: Schema = new Schema({
-  name: { type: String, required: true },
-  description: { type: String, required: true },
-  tags: { type: [String], required: true },
-  active: { type: Boolean, default: true },
-  alertThreshold: { type: Number, default: 75 },
-  sentiment: {
-    positive: { type: Number, default: 0 },
-    neutral: { type: Number, default: 0 },
-    negative: { type: Number, default: 0 },
+const topicSchema: Schema = new Schema(
+  {
+    name: { type: String, required: true },
+    description: { type: String, required: true },
+    tags: { type: [String], required: true },
+    active: { type: Boolean, default: true },
+    alertThreshold: { type: Number, default: 75 },
+    sentiment: {
+      positive: { type: Number, default: 0 },
+      neutral: { type: Number, default: 0 },
+      negative: { type: Number, default: 0 },
+    },
+    sentimentHistory: { type: [Object], default: [] },
+    createdBy: { type: Schema.Types.ObjectId, ref: "User" },
   },
-  sentimentHistory: { type: [Object], default: [] },
-}, { timestamps: true });
+  { timestamps: true }
+);
 
 export const TopicModel = mongoose.model<Topic>("Topic", topicSchema);

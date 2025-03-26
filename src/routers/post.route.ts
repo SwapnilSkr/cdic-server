@@ -4,7 +4,7 @@ import { authenticateToken } from "../middlewares/auth.middleware";
 
 const router = express.Router();
 
-router.post("/upload", uploadPosts);
+router.post("/upload", authenticateToken, uploadPosts);
 router.get("/all", authenticateToken, getAllStoredPosts);
 router.get("/flagged", authenticateToken, getFlaggedPosts);
 router.post("/toggle-flag/:postId", authenticateToken, togglePostFlag);

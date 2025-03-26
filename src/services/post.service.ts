@@ -157,8 +157,13 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
   try {
     let totalPostsStored = 0;
     let nextPageToken = "";
+    let searchApiCallCount = 0; // Counter for search API calls only
+    const MAX_SEARCH_API_CALLS = 10; // Maximum number of search API calls allowed
 
-    while (totalPostsStored < MAX_POSTS) {
+    while (totalPostsStored < MAX_POSTS && searchApiCallCount < MAX_SEARCH_API_CALLS) {
+      searchApiCallCount++;
+      console.log(`🔄 Making YouTube Search API call #${searchApiCallCount}/${MAX_SEARCH_API_CALLS}`);
+
       const response = await axios.get(
         `${process.env.YOUTUBE_API_URL}/search?q=${keyword}&part=snippet&maxResults=50&pageToken=${nextPageToken}&key=${process.env.YOUTUBE_API_KEY}`
       );
@@ -234,9 +239,14 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
         console.log("🚀 No more pages available. Stopping.");
         break;
       }
+
+      if (searchApiCallCount >= MAX_SEARCH_API_CALLS) {
+        console.log(`🚀 Reached maximum search API call limit (${MAX_SEARCH_API_CALLS}). Stopping.`);
+        break;
+      }
     }
 
-    console.log("🚀 YouTube video fetching complete!");
+    console.log(`🚀 YouTube video fetching complete! Made ${searchApiCallCount} search API calls.`);
   } catch (error) {
     console.error("❌ Error fetching or storing data:", error);
     throw error;

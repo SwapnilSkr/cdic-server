@@ -4,7 +4,12 @@ import { createTopic, getAllTopics, updateTopic, deleteTopic, deleteTopicAndPost
 export const createTopicController = async (req: Request, res: Response) => {
   try {
     const topicData = req.body;
-    const newTopic = await createTopic(topicData);
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ message: "Unauthorized" });
+      return;
+    }
+    const newTopic = await createTopic(topicData, userId);
     res.status(201).json(newTopic);
   } catch (error) {
     res.status(500).json({ message: "Error creating topic", error });
@@ -15,11 +20,16 @@ export const createTopicController = async (req: Request, res: Response) => {
 export const getAllTopicsController = async (req: Request, res: Response) => {
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 5;
-
+  const userId = req.user?.id;
+  if (!userId) {
+    res.status(401).json({ message: "Unauthorized" });
+    return;
+  }
   try {
-    const { topics, total } = await getAllTopics(page, limit);
+    const { topics, total } = await getAllTopics(page, limit, userId);
     res.status(200).json({ topics, total });
   } catch (error) {
+    console.error("Error fetching topics:", error);
     res.status(500).json({ message: "Error fetching topics", error });
   }
 };
