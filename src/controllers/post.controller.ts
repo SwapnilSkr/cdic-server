@@ -62,13 +62,13 @@ export const uploadPosts = async (
 
     if (topic && topic.active) {
       try {
-        await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
         await fetchAndStoreTwitterPosts(topicData.name, topic._id as unknown as string);
         await fetchAndStoreGoogleNewsPosts(topicData.name, topic._id as unknown as string);
         
         if (hashtag) {
           await fetchAndStoreInstagramPosts(hashtag, topic._id as unknown as string);
         }
+        await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
       } catch (fetchError) {
       }
     }

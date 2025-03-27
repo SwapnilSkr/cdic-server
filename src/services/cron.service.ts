@@ -21,7 +21,6 @@ const fetchPostsForTopic = async (topicName: string, topicId: string): Promise<v
     const hashtag = await convertSearchQueryToHashtag(topicName);
     
     // Fetch from all platforms in sequence
-    await fetchAndStoreYoutubeVideos(topicName, topicId);
     await fetchAndStoreTwitterPosts(topicName, topicId);
     await fetchAndStoreGoogleNewsPosts(topicName, topicId);
     
@@ -30,6 +29,7 @@ const fetchPostsForTopic = async (topicName: string, topicId: string): Promise<v
       await fetchAndStoreInstagramPosts(hashtag, topicId);
     }
     
+    await fetchAndStoreYoutubeVideos(topicName, topicId);
     console.log(`✅ Completed scheduled fetch for topic: ${topicName}`);
   } catch (error) {
     console.error(`❌ Error fetching posts for topic ${topicName}:`, error);
