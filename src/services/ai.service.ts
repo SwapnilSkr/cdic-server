@@ -321,6 +321,10 @@ export const generateResponse = async (
     let dbInfo: string | null = null;
     let searchResults: any = null;
 
+    //get last 5 messages
+    const chatHistory = await getChatHistory(userId);
+    const last5Messages = chatHistory.slice(-5);
+
     if (
       latestMessage.role === "user" &&
       typeof latestMessage.content === "string"
@@ -357,7 +361,7 @@ export const generateResponse = async (
             latestMessage.content.toLowerCase().includes("creator") ||
             latestMessage.content.toLowerCase().includes("handle")
           ) {
-            searchResults = await intelligentSearch(latestMessage.content, 5);
+            searchResults = await intelligentSearch(latestMessage.content, 5, last5Messages);
 
             // If no author results found, this will fall through to the next check
             if (
@@ -369,7 +373,7 @@ export const generateResponse = async (
           }
           // Otherwise try generic intelligent search
           else {
-            searchResults = await intelligentSearch(latestMessage.content, 5);
+            searchResults = await intelligentSearch(latestMessage.content, 5, last5Messages);
           }
 
           if (

@@ -12,11 +12,12 @@ const openai = new OpenAI({
 
 export const searchPostsByContent = async (
   query: string,
-  limit: number = 5
+  limit: number = 5,
+  last5Messages: any[] = []
 ): Promise<any[]> => {
   try {
     console.log(`🔍 Performing semantic search for: "${query}"`);
-    const searchEntities = await extractSearchEntities(query);
+    const searchEntities = await extractSearchEntities(query, last5Messages);
     console.log("Search entities:", searchEntities);
     const mongoQuery = buildContentSearchQuery(searchEntities);
     console.log(
@@ -49,11 +50,12 @@ export const searchPostsByContent = async (
 export const searchAuthors = async (
   query: string,
   limit: number = 5,
-  includeDetailedPosts: boolean = true
+  includeDetailedPosts: boolean = true,
+  last5Messages: any[] = [] 
 ): Promise<any[]> => {
   try {
     console.log(`🔍 Searching for authors matching: "${query}"`);
-    const searchEntities = await extractSearchEntities(query);
+    const searchEntities = await extractSearchEntities(query, last5Messages);
 
     let queryConditions = [];
 
@@ -414,7 +416,7 @@ export const getPlatformStatistics = async (): Promise<any> => {
   }
 };
 
-async function extractSearchEntities(query: string): Promise<{
+async function extractSearchEntities(query: string, last5Messages: any[]): Promise<{
   names: string[];
   platforms: string[];
   timeframe: { start: Date; end: Date } | null;
@@ -422,10 +424,11 @@ async function extractSearchEntities(query: string): Promise<{
 }> {
   try {
     const prompt = `
-You are analyzing a search query for a social media monitoring platform. 
+You are analyzing a search query for a social media monitoring platform related to author, post, topic or incident or something related to them. 
 Extract the following information from this query: "${query}"
 
-1. Names: Identify any person names, organization names, topics in general, or specific usernames mentioned. 
+
+1. Names: Identify any person names, organization names, topics in general, posts or specific usernames mentioned. 
    If there's a full name, include both the full name AND individual parts.
    Example: "John Doe" should return ["John Doe", "John", "Doe", "John Doe's post"]
 
@@ -439,6 +442,13 @@ Extract the following information from this query: "${query}"
 
 4. Incident: If the query refers to a specific incident or event, identify it.
    Be specific but concise.
+
+Here is the conversation history:
+${last5Messages.map((message) => `${message.role}: ${message.content}`).join("\n") || "No conversation history available"}
+
+If you think that the user is asking vague questions, then search the conversation history to see if he might be trying to search for something related to the previous queries.
+If you get enough context with the current query, then you can ignore the conversation history.
+
 
 Format your response as JSON object with these fields. Return ONLY the JSON object without any explanation.
 Example:
@@ -722,7 +732,8 @@ export const getPostsByAuthor = async (
 
 export const getPostsByTopic = async (
   topic: string,
-  limit: number = 10
+  limit: number = 10,
+  last5Messages: any[] = []
 ): Promise<any[]> => {
   try {
     const topicDoc = await TopicModel.findOne({
@@ -740,7 +751,7 @@ export const getPostsByTopic = async (
       }
     }
 
-    return await searchPostsByContent(topic, limit);
+    return await searchPostsByContent(topic, limit, last5Messages);
   } catch (error) {
     console.error("❌ Error fetching posts by topic:", error);
     throw error;
@@ -749,25 +760,26 @@ export const getPostsByTopic = async (
 
 export const intelligentSearch = async (
   query: string,
-  limit: number = 5
+  limit: number = 5,
+  last5Messages: any[] = []
 ): Promise<{
   type: string;
   data: any[];
   summary: string;
 }> => {
   try {
-    const searchIntent = await determineSearchIntent(query);
+    const searchIntent = await determineSearchIntent(query, last5Messages);
     let results: any[] = [];
     let summaryPrompt = "";
 
     switch (searchIntent.primaryEntity) {
       case "post":
-        results = await searchPostsByContent(query, limit);
+        results = await searchPostsByContent(query, limit, last5Messages);
         summaryPrompt = `Summarize these ${results.length} posts about "${query}" for a social media monitoring dashboard. Include key themes, platforms, include the posts in the summary and the engagement levels.`;
         break;
 
       case "author":
-        results = await searchAuthors(query, limit, true);
+        results = await searchAuthors(query, limit, true, last5Messages);
         summaryPrompt = `Summarize these ${results.length} authors related to "${query}" for a social media monitoring dashboard. Include their platforms, follower counts, top posts, engagement metrics, and notable content themes.`;
         break;
 
@@ -777,7 +789,7 @@ export const intelligentSearch = async (
         break;
 
       case "incident":
-        results = await searchPostsByContent(query, limit);
+        results = await searchPostsByContent(query, limit, last5Messages);
         summaryPrompt = `Summarize these ${results.length} posts about the incident "${query}" for a social media monitoring dashboard. Include key details, platforms involved, and engagement metrics.`;
         break;
 
@@ -789,9 +801,15 @@ export const intelligentSearch = async (
       default:
         const postResults = await searchPostsByContent(
           query,
-          Math.floor(limit / 2)
+          Math.floor(limit / 2),
+          last5Messages
         );
-        const authorResults = await searchAuthors(query, Math.ceil(limit / 2));
+        const authorResults = await searchAuthors(
+          query,
+          Math.ceil(limit / 2),
+          true,
+          last5Messages
+        );
 
         if (postResults.length > 0) {
           results = postResults;
@@ -830,7 +848,7 @@ export const intelligentSearch = async (
   }
 };
 
-async function determineSearchIntent(query: string): Promise<{
+async function determineSearchIntent(query: string, last5Messages: any[]): Promise<{
   primaryEntity: string;
   confidence: number;
 }> {
@@ -838,6 +856,12 @@ async function determineSearchIntent(query: string): Promise<{
     const prompt = `
 You are analyzing a search query for a social media monitoring platform. 
 Determine what the user is primarily looking for in this query: "${query}"
+
+Here is the conversation history:
+${last5Messages.map((message) => `${message.role}: ${message.content}`).join("\n") || "No conversation history available"}
+
+If you think that the user is asking vague questions, then search the conversation history to see what the user's intent might be.
+If you get enough context for the user's intent with the current query, then you can ignore the conversation history.
 
 Select ONE primary entity type from:
 - post (looking for specific social media posts or content)
