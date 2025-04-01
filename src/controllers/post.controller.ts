@@ -15,11 +15,13 @@ import {
   fetchAndStoreGoogleNewsPosts,
   renamePlatformGoogleNewsToNews,
   dismissPostService,
+  fetchAndStoreRedditPosts,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
 import { convertSearchQueryToHashtag } from "../services/ai.service";
 import { fetchAllTopics } from "../services/cron.service";
+import axios from "axios";
 
 /**
  * Controller to handle uploading all posts.
@@ -68,8 +70,10 @@ export const uploadPosts = async (
         if (hashtag) {
           await fetchAndStoreInstagramPosts(hashtag, topic._id as unknown as string);
         }
+        await fetchAndStoreRedditPosts(topicData.name, topic._id as unknown as string);
         await fetchAndStoreYoutubeVideos(topicData.name, topic._id as unknown as string);
       } catch (fetchError) {
+        console.error("Error fetching posts:", fetchError);
       }
     }
 
@@ -353,3 +357,150 @@ export const triggerFetchAllTopics = async (
     res.status(500).json({ error: "Internal server error" });
   }
 };
+
+export const testRedditAuth = async (
+  request: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    // Get the keyword from request query or body
+    const keyword = request.query.keyword || request.body.keyword || 'javascript';
+    
+    // Authenticate with Reddit
+    const authResponse = await axios.post(
+      'https://www.reddit.com/api/v1/access_token',
+      new URLSearchParams({
+        grant_type: 'password',
+        username: process.env.REDDIT_USERNAME || '',
+        password: process.env.REDDIT_PASSWORD || '',
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(
+            `${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`
+          ).toString('base64')}`,
+          'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
+        }
+      }
+    );
+    
+    console.log(authResponse.data);
+    const accessToken = authResponse.data.access_token;
+    
+    // Search Reddit for the keyword
+    const encodedKeyword = encodeURIComponent(keyword);
+    const searchUrl = `https://oauth.reddit.com/search.json?q=${encodedKeyword}&sort=new&limit=25`;
+    
+    const searchResponse = await axios.get(searchUrl, {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
+      }
+    });
+    
+    // Process posts and fetch author data
+    const posts = searchResponse.data.data.children;
+    const processedPosts = [];
+    const authorCache: Record<string, any> = {}; // Cache to avoid duplicate author requests
+    
+    for (const post of posts) {
+      const postData = post.data;
+      const authorName = postData.author;
+      
+      // Skip if author is deleted or unavailable
+      if (authorName === '[deleted]' || !authorName) {
+        continue;
+      }
+      
+      // Fetch author data if not already in cache
+      if (!authorCache[authorName]) {
+        try {
+          const authorUrl = `https://oauth.reddit.com/user/${authorName}/about.json`;
+          const authorResponse = await axios.get(authorUrl, {
+            headers: {
+              'Authorization': `Bearer ${accessToken}`,
+              'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
+            }
+          });
+          
+          const authorData = authorResponse.data.data;
+          authorCache[authorName] = {
+            id: authorData.id,
+            name: authorData.name,
+            created_utc: authorData.created_utc,
+            link_karma: authorData.link_karma,
+            comment_karma: authorData.comment_karma,
+            profile_img: authorData.icon_img || authorData.snoovatar_img || "",
+            is_gold: authorData.is_gold,
+            is_mod: authorData.is_mod,
+            verified: authorData.verified,
+            profile_url: `https://www.reddit.com/user/${authorName}`
+          };
+        } catch (error: any) {
+          console.error(`Error fetching author data for ${authorName}:`, error.message);
+          // Create a basic author object if the request fails
+          authorCache[authorName] = {
+            name: authorName,
+            profile_url: `https://www.reddit.com/user/${authorName}`
+          };
+        }
+      }
+      
+      // Extract image URL if it exists
+      let imageUrl = "";
+      if (postData.preview && 
+          postData.preview.images && 
+          postData.preview.images.length > 0 &&
+          postData.preview.images[0].source) {
+        imageUrl = postData.preview.images[0].source.url || "";
+      }
+      
+      // Create processed post with author data
+      processedPosts.push({
+        post: {
+          id: postData.id,
+          title: postData.title,
+          selftext: postData.selftext,
+          created_utc: postData.created_utc,
+          score: postData.score,
+          upvote_ratio: postData.upvote_ratio,
+          num_comments: postData.num_comments,
+          permalink: `https://www.reddit.com${postData.permalink}`,
+          url: postData.url,
+          subreddit: postData.subreddit,
+          subreddit_id: postData.subreddit_id,
+          is_video: postData.is_video,
+          image_url: imageUrl,
+          over_18: postData.over_18,
+          spoiler: postData.spoiler,
+          stickied: postData.stickied
+        },
+        author: authorCache[authorName]
+      });
+    }
+    
+    // Return the processed data
+    res.status(200).json({
+      results: {
+        posts: processedPosts,
+        metadata: {
+          keyword: keyword,
+          count: processedPosts.length,
+          after: searchResponse.data.data.after,
+          before: searchResponse.data.data.before
+        }
+      }
+    });
+    
+    return;
+  } catch (error : any) {
+    console.error("Error:", error.response?.data || error.message);
+    res.status(500).json({ 
+      error: "Internal server error", 
+      details: error.response?.data || error.message 
+    });
+  }
+}
+
+

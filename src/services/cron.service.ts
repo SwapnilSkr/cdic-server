@@ -4,7 +4,8 @@ import {
   fetchAndStoreInstagramPosts, 
   fetchAndStoreTwitterPosts, 
   fetchAndStoreYoutubeVideos, 
-  fetchAndStoreGoogleNewsPosts 
+  fetchAndStoreGoogleNewsPosts, 
+  fetchAndStoreRedditPosts
 } from './post.service';
 import { convertSearchQueryToHashtag } from './ai.service';
 
@@ -28,6 +29,8 @@ const fetchPostsForTopic = async (topicName: string, topicId: string): Promise<v
     if (hashtag) {
       await fetchAndStoreInstagramPosts(hashtag, topicId);
     }
+
+    await fetchAndStoreRedditPosts(topicName, topicId);
     
     await fetchAndStoreYoutubeVideos(topicName, topicId);
     console.log(`✅ Completed scheduled fetch for topic: ${topicName}`);

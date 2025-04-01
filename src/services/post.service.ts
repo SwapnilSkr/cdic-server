@@ -158,14 +158,14 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
     let totalPostsStored = 0;
     let nextPageToken = "";
     let searchApiCallCount = 0; // Counter for search API calls only
-    const MAX_SEARCH_API_CALLS = 10; // Maximum number of search API calls allowed
+    const MAX_SEARCH_API_CALLS = 2; // Maximum number of search API calls allowed
 
     while (totalPostsStored < MAX_POSTS && searchApiCallCount < MAX_SEARCH_API_CALLS) {
       searchApiCallCount++;
       console.log(`🔄 Making YouTube Search API call #${searchApiCallCount}/${MAX_SEARCH_API_CALLS}`);
 
       const response = await axios.get(
-        `${process.env.YOUTUBE_API_URL}/search?q=${keyword}&part=snippet&maxResults=50&pageToken=${nextPageToken}&key=${process.env.YOUTUBE_API_KEY}`
+        `${process.env.YOUTUBE_API_URL}/search?q=${keyword}&part=snippet&maxResults=100&pageToken=${nextPageToken}&key=${process.env.YOUTUBE_API_KEY}`
       );
 
       const videos = response.data.items;
@@ -487,6 +487,256 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
     console.log("🚀 Google News fetching complete!");
   } catch (error) {
     console.error("❌ Error fetching or storing data:", error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch and store Reddit posts until MAX_POSTS (50) is reached.
+ * @param keyword - The keyword to search for.
+ * @param topicId - The topic ID associated with these posts.
+ */
+export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string): Promise<void> => {
+  try {
+    let totalPostsStored = 0;
+    let after: string | null = null;
+    const MAX_POSTS = 100; // Define maximum posts to fetch
+    
+    // Authenticate with Reddit
+    console.log('🔑 Authenticating with Reddit API...');
+    const authResponse = await axios.post(
+      'https://www.reddit.com/api/v1/access_token',
+      new URLSearchParams({
+        grant_type: 'password',
+        username: process.env.REDDIT_USERNAME || '',
+        password: process.env.REDDIT_PASSWORD || '',
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(
+            `${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`
+          ).toString('base64')}`,
+          'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
+        }
+      }
+    );
+    
+    const accessToken = authResponse.data.access_token;
+    console.log('✅ Successfully authenticated with Reddit');
+
+    // Create a cache for author data to avoid duplicate requests
+    const authorCache: Record<string, any> = {};
+
+    while (totalPostsStored < MAX_POSTS) {
+      const encodedKeyword = encodeURIComponent(keyword);
+      let url = `https://oauth.reddit.com/search.json?q=${encodedKeyword}&sort=new&limit=25`;
+      if (after) {
+        url += `&after=${encodeURIComponent(after)}`;
+      }
+
+      console.log(`🔄 Fetching from: ${url}`);
+
+      const response = await axios.get(url, {
+        headers: {
+          'User-Agent': 'MyApp/1.0.0 (by /u/your_username)',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+      });
+
+      const data = response.data;
+
+      if (!data.data || !Array.isArray(data.data.children)) {
+        console.error("⚠️ Invalid API response format");
+        break;
+      }
+
+      const postsData: IPost[] = [];
+
+      for (const post of data.data.children) {
+        if (totalPostsStored >= MAX_POSTS) break;
+        
+        const postData = post.data;
+        
+        if (!postData.id || !postData.author) {
+          console.log("⚠️ Skipping post due to missing required data");
+          continue;
+        }
+
+        // Skip if author is deleted or unavailable
+        if (postData.author === '[deleted]' || !postData.author) {
+          console.log("⚠️ Skipping post due to deleted or unavailable author");
+          continue;
+        }
+        
+        // Check if post already exists
+        const existingPost = await Post.findOne({ post_id: postData.id });
+        if (existingPost) {
+          console.log(`⚠️ Skipping post ${postData.id} as it already exists.`);
+          continue; // Skip if post already exists
+        }
+        
+        // Check if author already exists in database
+        let author = await Author.findOne({ author_id: postData.author });
+        
+        // If not in DB and not in cache, fetch author data
+        if (!author && !authorCache[postData.author]) {
+          try {
+            const authorUrl = `https://oauth.reddit.com/user/${postData.author}/about.json`;
+            console.log(`🔄 Fetching author data for: ${postData.author}`);
+            
+            const authorResponse = await axios.get(authorUrl, {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
+              }
+            });
+            
+            const authorData = authorResponse.data.data;
+            authorCache[postData.author] = {
+              author_id: authorData.id,
+              username: authorData.name,
+              profile_pic: authorData.icon_img || authorData.snoovatar_img || "",
+              followers_count: authorData.link_karma + authorData.comment_karma, // Using karma as a proxy for popularity
+              posts_count: 0, // Reddit doesn't easily provide this
+              profile_link: `https://www.reddit.com/user/${postData.author}`
+            };
+          } catch (error: any) {
+            console.error(`❌ Error fetching author data for ${postData.author}:`, error.message);
+            // Create a basic author object if the request fails
+            authorCache[postData.author] = {
+              author_id: postData.author,
+              username: postData.author,
+              profile_pic: "",
+              followers_count: 0,
+              posts_count: 0,
+              profile_link: `https://www.reddit.com/user/${postData.author}`
+            };
+          }
+        }
+        
+        // Create or get the author
+        if (!author) {
+          try {
+            // Use data from cache
+            const authorData = authorCache[postData.author];
+            
+            // Try to find one more time (in case it was created between our earlier check and now)
+            author = await Author.findOne({ author_id: authorData.author_id });
+            
+            if (!author) {
+              // Use findOneAndUpdate with upsert to prevent race conditions
+              author = await Author.findOneAndUpdate(
+                { author_id: authorData.author_id },
+                {
+                  author_id: authorData.author_id,
+                  username: authorData.username,
+                  profile_pic: authorData.profile_pic,
+                  followers_count: authorData.followers_count,
+                  posts_count: authorData.posts_count,
+                  profile_link: authorData.profile_link
+                },
+                { new: true, upsert: true }
+              );
+              console.log(`✅ Created author: ${author?.username}`);
+            } else {
+              console.log(`⚠️ Author ${author?.username} already exists. Using existing author.`);
+            }
+          } catch (error) {
+            console.error(`❌ Error creating author: ${postData.author}`, error);
+            // Skip this post if we can't create the author
+            continue;
+          }
+        } else {
+          console.log(`⚠️ Author ${author.username} already exists. Using existing author.`);
+        }
+
+        const postUrl = `https://www.reddit.com${postData.permalink}`;
+        const createdAt = new Date(postData.created_utc * 1000); // Convert Unix timestamp to Date
+
+        // Extract image URL if it exists
+        let imageUrl = "";
+        if (postData.preview && 
+            postData.preview.images && 
+            postData.preview.images.length > 0 &&
+            postData.preview.images[0].source) {
+          imageUrl = postData.preview.images[0].source.url.replace(/&amp;/g, '&') || "";
+        } else if (postData.thumbnail && postData.thumbnail !== "self" && postData.thumbnail !== "default") {
+          imageUrl = postData.thumbnail;
+        }
+        
+        // Extract video URL if it exists
+        let videoUrl = "";
+        if (postData.is_video && postData.media && postData.media.reddit_video) {
+          videoUrl = postData.media.reddit_video.fallback_url || "";
+        }
+
+        // Create post document for DB storage
+        postsData.push(
+          new Post({
+            platform: "Reddit",
+            post_id: postData.id,
+            author_id: author?.author_id || "",
+            profile_pic: author?.profile_pic || "",
+            username: postData.author,
+            caption: postData.selftext || "", 
+            title: postData.title || "",
+            image_url: imageUrl,
+            video_url: videoUrl,
+            created_at: createdAt,
+            post_url: postUrl,
+            likesCount: postData.score || 0,
+            commentsCount: postData.num_comments || 0,
+            viewsCount: 0, // Reddit doesn't provide view counts
+            topic_ids: [topicId], // Add topic reference
+            flagged: false,
+            dismissed: false
+          })
+        );
+      }
+
+      // Store posts in database
+      if (postsData.length > 0) {
+        try {
+          // Insert posts one by one to avoid stopping the entire batch on error
+          let successCount = 0;
+          for (const post of postsData) {
+            try {
+              await post.save();
+              successCount++;
+            } catch (error: any) {
+              if (error.code === 11000) {
+                // Duplicate key error, just log and continue
+                console.log(`⚠️ Skipping duplicate post: ${post.post_id}`);
+              } else {
+                console.error(`❌ Error saving post ${post.post_id}:`, error.message);
+              }
+            }
+          }
+          
+          totalPostsStored += successCount;
+          console.log(
+            `✅ Stored ${successCount} Reddit posts (Total: ${totalPostsStored}/${MAX_POSTS})`
+          );
+        } catch (error) {
+          console.error("❌ Error batch storing posts:", error);
+        }
+      } else {
+        console.log("⚠️ No posts found.");
+        break;
+      }
+
+      after = data.data.after || null;
+
+      if (!after || totalPostsStored >= MAX_POSTS) {
+        console.log("🚀 Fetching complete!");
+        break;
+      }
+    }
+
+    console.log("🚀 Reddit post fetching complete!");
+  } catch (error) {
+    console.error("❌ Error fetching or storing Reddit data:", error);
     throw error;
   }
 };
