@@ -181,6 +181,7 @@ export const getAllAuthorsInfo = async (
     const authors = await Author.find(query)
       .skip((page - 1) * limit)
       .limit(limit)
+      .sort({createdAt: -1})
       .lean();
 
     // Get platform information for each author
