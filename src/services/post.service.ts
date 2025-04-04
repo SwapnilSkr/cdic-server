@@ -3,7 +3,6 @@ import Post, { IPost } from "../models/post.model";
 import {
   createInstagramAuthor,
   createYoutubeAuthor,
-  createTwitterAuthor,
   createNewsAuthor,
 } from "./author.service";
 import Author, { IAuthor } from "../models/author.model";
@@ -30,6 +29,10 @@ export const fetchPostByUrlService = async (
       return fetchInstagramPostByUrl(url, topicId);
     } else if (platform === "Twitter") {
       return fetchTwitterPostByUrl(url, topicId);
+    } else if (platform === "Youtube") {
+      return fetchYoutubeByUrl(url, topicId);
+    } else if (platform === "Reddit") {
+      return fetchRedditPostByUrl(url, topicId);
     }
     return null;
   } catch (error) {
@@ -390,6 +393,118 @@ export const fetchAndStoreYoutubeVideos = async (
     );
   } catch (error) {
     console.error("❌ Error fetching or storing data:", error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch a YouTube video by url
+ *
+ * @param url - The url of the YouTube video
+ * @param topicId - The topic ID associated with this video
+ */
+export const fetchYoutubeByUrl = async (
+  url: string,
+  topicId: string
+): Promise<IPost | null> => {
+  try {
+    if (!url) {
+      console.error("❌ Invalid YouTube URL");
+      return null;
+    }
+
+    // Extract the video ID from the URL
+    const videoIdMatch = url.match(
+      /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/
+    );
+    if (!videoIdMatch) {
+      console.error("❌ Could not extract video ID from YouTube URL");
+      return null;
+    }
+
+    const videoId = videoIdMatch[1];
+    console.log(`🔄 Fetching YouTube video with ID: ${videoId}`);
+
+    // Check if post already exists
+    const existingPost = await Post.findOne({ post_id: videoId });
+    if (existingPost) {
+      console.log(`⚠️ Skipping video ${videoId} as it already exists.`);
+      return existingPost;
+    }
+
+    // Fetch video details from YouTube API
+    const videoResponse = await axios.get(
+      `${process.env.YOUTUBE_API_URL}/videos?id=${videoId}&part=snippet,statistics&key=${process.env.YOUTUBE_API_KEY}`
+    );
+
+    const videoData = videoResponse.data.items[0];
+    if (!videoData) {
+      console.error("❌ No video found with the given ID");
+      return null;
+    }
+
+    const channelId = videoData.snippet.channelId;
+
+    // Check if author already exists
+    let author = await Author.findOne({ author_id: channelId });
+
+    if (!author) {
+      // Fetch channel details
+      const channelResponse = await axios.get(
+        `${process.env.YOUTUBE_API_URL}/channels?id=${channelId}&part=snippet,statistics&key=${process.env.YOUTUBE_API_KEY}`
+      );
+
+      const channelData = channelResponse.data.items[0];
+      if (!channelData) {
+        console.error("❌ No channel found with the given ID");
+        return null;
+      }
+
+      // Create author from channel data
+      author = new Author({
+        author_id: channelId,
+        username: channelData.snippet.title,
+        profile_pic: channelData.snippet.thumbnails.high.url,
+        followers_count: parseInt(channelData.statistics.subscriberCount) || 0,
+        posts_count: parseInt(channelData.statistics.videoCount) || 0,
+        profile_link: `https://www.youtube.com/channel/${channelId}`,
+      });
+
+      // Save the author to the database
+      await author.save();
+      console.log(`✅ Created author: ${author.username}`);
+    } else {
+      console.log(
+        `⚠️ Author ${author.username} already exists. Using existing author.`
+      );
+    }
+
+    const statistics = videoData.statistics || {};
+    const createdAt = new Date(videoData.snippet.publishedAt);
+
+    // Create the post
+    const post = new Post({
+      platform: "Youtube",
+      post_id: videoId,
+      author_id: author.author_id,
+      profile_pic: author.profile_pic,
+      username: author.username,
+      title: videoData.snippet.title,
+      caption: videoData.snippet.description,
+      image_url: videoData.snippet.thumbnails.high.url,
+      likesCount: parseInt(statistics.likeCount) || 0,
+      commentsCount: parseInt(statistics.commentCount) || 0,
+      viewsCount: parseInt(statistics.viewCount) || 0,
+      created_at: createdAt,
+      post_url: `https://www.youtube.com/watch?v=${videoId}`,
+      topic_ids: [topicId], // Add topic reference
+    });
+
+    await post.save();
+    console.log(`✅ Successfully fetched and saved YouTube video: ${videoId}`);
+    return post;
+  } catch (error) {
+    console.error("❌ Error fetching or storing YouTube data:", error);
     throw error;
   }
 };
@@ -1047,6 +1162,211 @@ export const fetchAndStoreRedditPosts = async (
     console.log("🚀 Reddit post fetching complete!");
   } catch (error) {
     console.error("❌ Error fetching or storing Reddit data:", error);
+    throw error;
+  }
+};
+
+/**
+ * Fetch a Reddit post by URL and store it in the database
+ *
+ * @param url - The URL of the Reddit post
+ * @param topicId - The topic ID associated with this post
+ * @returns The stored post or null if failed
+ */
+export const fetchRedditPostByUrl = async (
+  url: string,
+  topicId: string
+): Promise<IPost | null> => {
+  try {
+    if (!url) {
+      console.error("❌ Invalid Reddit URL");
+      return null;
+    }
+
+    // Extract the post ID from the URL
+    // Reddit URLs can be in formats like:
+    // https://www.reddit.com/r/subreddit/comments/postid/title/
+    // https://old.reddit.com/r/subreddit/comments/postid/title/
+    // https://reddit.com/comments/postid/
+    const postIdMatch = url.match(/\/comments\/([a-z0-9]+)/i);
+    if (!postIdMatch) {
+      console.error("❌ Could not extract post ID from Reddit URL");
+      return null;
+    }
+
+    const postId = postIdMatch[1];
+    console.log(`🔄 Fetching Reddit post with ID: ${postId}`);
+
+    // Check if post already exists
+    const existingPost = await Post.findOne({ post_id: postId });
+    if (existingPost) {
+      console.log(`⚠️ Skipping post ${postId} as it already exists.`);
+      return existingPost;
+    }
+
+    // Authenticate with Reddit
+    console.log("🔑 Authenticating with Reddit API...");
+    const authResponse = await axios.post(
+      "https://www.reddit.com/api/v1/access_token",
+      new URLSearchParams({
+        grant_type: "password",
+        username: process.env.REDDIT_USERNAME || "",
+        password: process.env.REDDIT_PASSWORD || "",
+      }).toString(),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
+            `${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`
+          ).toString("base64")}`,
+          "User-Agent": "MyApp/1.0.0 (by /u/your_username)",
+        },
+      }
+    );
+
+    const accessToken = authResponse.data.access_token;
+    console.log("✅ Successfully authenticated with Reddit");
+
+    // Fetch the post using the Reddit API
+    const response = await axios.get(
+      `https://oauth.reddit.com/api/info.json?id=t3_${postId}`,
+      {
+        headers: {
+          "User-Agent": "MyApp/1.0.0 (by /u/your_username)",
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    const data = response.data;
+    if (
+      !data.data ||
+      !Array.isArray(data.data.children) ||
+      data.data.children.length === 0
+    ) {
+      console.error("❌ Invalid API response format or post not found");
+      return null;
+    }
+
+    const postData = data.data.children[0].data;
+
+    if (!postData.id || !postData.author) {
+      console.error("❌ Missing required post data");
+      return null;
+    }
+
+    // Skip if author is deleted or unavailable
+    if (postData.author === "[deleted]" || !postData.author) {
+      console.error("❌ Post has deleted or unavailable author");
+      return null;
+    }
+
+    // Fetch author data
+    let author = await Author.findOne({ author_id: postData.author });
+    if (!author) {
+      try {
+        const authorUrl = `https://oauth.reddit.com/user/${postData.author}/about.json`;
+        console.log(`🔄 Fetching author data for: ${postData.author}`);
+
+        const authorResponse = await axios.get(authorUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "User-Agent": "MyApp/1.0.0 (by /u/your_username)",
+          },
+        });
+
+        const authorData = authorResponse.data.data;
+        author = new Author({
+          author_id: authorData.id,
+          username: authorData.name,
+          profile_pic: authorData.icon_img || authorData.snoovatar_img || "",
+          followers_count: authorData.link_karma + authorData.comment_karma,
+          posts_count: 0, // Reddit doesn't easily provide this
+          profile_link: `https://www.reddit.com/user/${postData.author}`,
+        });
+
+        await author.save();
+        console.log(`✅ Created author: ${author.username}`);
+      } catch (error: any) {
+        console.error(
+          `❌ Error fetching author data for ${postData.author}:`,
+          error.message
+        );
+
+        // Create a basic author object if the request fails
+        author = new Author({
+          author_id: postData.author,
+          username: postData.author,
+          profile_pic: "",
+          followers_count: 0,
+          posts_count: 0,
+          profile_link: `https://www.reddit.com/user/${postData.author}`,
+        });
+
+        await author.save();
+        console.log(`✅ Created basic author: ${author.username}`);
+      }
+    } else {
+      console.log(
+        `⚠️ Author ${author.username} already exists. Using existing author.`
+      );
+    }
+
+    const postUrl = `https://www.reddit.com${postData.permalink}`;
+    const createdAt = new Date(postData.created_utc * 1000);
+
+    // Extract image URL if it exists
+    let imageUrl = "";
+    if (
+      postData.preview &&
+      postData.preview.images &&
+      postData.preview.images.length > 0 &&
+      postData.preview.images[0].source
+    ) {
+      imageUrl =
+        postData.preview.images[0].source.url.replace(/&amp;/g, "&") || "";
+    } else if (
+      postData.thumbnail &&
+      postData.thumbnail !== "self" &&
+      postData.thumbnail !== "default"
+    ) {
+      imageUrl = postData.thumbnail;
+    }
+
+    // Extract video URL if it exists
+    let videoUrl = "";
+    if (postData.is_video && postData.media && postData.media.reddit_video) {
+      videoUrl = postData.media.reddit_video.fallback_url || "";
+    }
+
+    // Create the post
+    const post = new Post({
+      platform: "Reddit",
+      post_id: postData.id,
+      author_id: author.author_id,
+      profile_pic: author.profile_pic || "",
+      username: postData.author,
+      caption: postData.selftext || "",
+      title: postData.title || "",
+      image_url: imageUrl,
+      video_url: videoUrl,
+      created_at: createdAt,
+      post_url: postUrl,
+      likesCount: postData.score || 0,
+      commentsCount: postData.num_comments || 0,
+      viewsCount: 0, // Reddit doesn't provide view counts
+      topic_ids: [topicId], // Add topic reference
+      flagged: false,
+      dismissed: false,
+    });
+
+    await post.save();
+    console.log(
+      `✅ Successfully fetched and saved Reddit post: ${postData.id}`
+    );
+    return post;
+  } catch (error) {
+    console.error("❌ Error fetching or storing Reddit post:", error);
     throw error;
   }
 };
