@@ -1,20 +1,52 @@
 import axios from "axios";
 import Post, { IPost } from "../models/post.model";
-import { createInstagramAuthor, createYoutubeAuthor, createTwitterAuthor, createNewsAuthor } from "./author.service";
+import {
+  createInstagramAuthor,
+  createYoutubeAuthor,
+  createTwitterAuthor,
+  createNewsAuthor,
+} from "./author.service";
 import Author, { IAuthor } from "../models/author.model";
 import mongoose from "mongoose";
 import { IUser } from "../models/user.model";
-import {TopicModel, Topic} from "../models/topic.model";
-import {getJson} from "serpapi";
+import { TopicModel, Topic } from "../models/topic.model";
+import { getJson } from "serpapi";
 
 const MAX_POSTS = 200;
+
+/**
+ * Fetch posts from any platform with a url
+ * @param url - The url of the post
+ * @param platform - The platform of the post
+ * @param topicId - The topic ID associated with these posts.
+ */
+export const fetchPostByUrlService = async (
+  url: string,
+  platform: string,
+  topicId: string
+): Promise<IPost | null> => {
+  try {
+    if (platform === "Instagram") {
+      return fetchInstagramPostByUrl(url, topicId);
+    } else if (platform === "Twitter") {
+      return fetchTwitterPostByUrl(url, topicId);
+    }
+    return null;
+  } catch (error) {
+    console.error("❌ Error fetching or storing data:", error);
+    throw error;
+  }
+};
 
 /**
  * Fetch and store Instagram posts recursively until MAX_POSTS (100) is reached.
  * @param keyword - The hashtag keyword for fetching posts.
  * @param topicId - The topic ID associated with these posts.
  */
-export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: string): Promise<void> => {
+export const fetchAndStoreInstagramPosts = async (
+  keyword: string,
+  topicId: string
+): Promise<void> => {
   let totalPostsStored = 0;
   let nextPageId: string | null = null;
 
@@ -57,7 +89,8 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
         });
 
         // Extract all available media content from multiple sources
-        const clipsItems = section.layout_content?.one_by_two_item?.clips?.items || [];
+        const clipsItems =
+          section.layout_content?.one_by_two_item?.clips?.items || [];
         const mediaItems = section.layout_content?.medias || [];
         const allMedias = [...clipsItems, ...mediaItems];
 
@@ -127,7 +160,9 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
-        console.log(`✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`);
+        console.log(
+          `✅ Stored ${postsData.length} posts (Total: ${totalPostsStored}/${MAX_POSTS})`
+        );
       } else {
         console.log("⚠️ No new posts found.");
       }
@@ -149,20 +184,122 @@ export const fetchAndStoreInstagramPosts = async (keyword: string, topicId: stri
 };
 
 /**
+ * Fetch an instagram post by url
+ * @param url - The url of the instagram post
+ * @param topicId - The topic ID associated with these posts.
+ */
+export const fetchInstagramPostByUrl = async (
+  url: string,
+  topicId: string
+): Promise<IPost | null> => {
+  if (!url) {
+    console.error("❌ Invalid Instagram URL");
+    return null;
+  }
+  let codeFromUrl: string;
+  console.log("🔄 Fetching Instagram post by url:", url);
+  const codeFromPostUrl = url.match(/\/p\/([^/?]+)/)?.[1] || null;
+  const codeFromReelUrl = url.match(/\/reels\/([^/?]+)/)?.[1] || null;
+  if (codeFromPostUrl) {
+    codeFromUrl = codeFromPostUrl;
+  } else if (codeFromReelUrl) {
+    codeFromUrl = codeFromReelUrl;
+  } else {
+    console.error("❌ Invalid Instagram URL");
+    return null;
+  }
+  try {
+    const response = await axios.get(
+      `${process.env.HIKER_API_URL_V2}/media/info/by/code?code=${codeFromUrl}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "x-access-key": process.env.HIKER_API_KEY || "",
+        },
+      }
+    );
+    const { media_or_ad } = response.data;
+    if (!media_or_ad) {
+      console.error("❌ No media or ad found");
+      return null;
+    }
+    const { id: post_id } = media_or_ad;
+    const existingPost = await Post.findOne({ post_id });
+    if (existingPost) {
+      console.log(`⚠️ Skipping post ${post_id} as it already exists.`);
+      return existingPost;
+    }
+    const { caption: captionData } = media_or_ad;
+    const author = await createInstagramAuthor(captionData.user.pk);
+    if (!author) {
+      console.error("❌ No author found");
+      return null;
+    }
+    const { id: author_id } = captionData.user;
+    const { username } = captionData.user;
+    const { profile_pic_url: profile_pic } = captionData.user;
+    const { text: caption } = captionData;
+    const { like_count: likesCount } = media_or_ad;
+    const { comment_count: commentsCount } = media_or_ad;
+    let viewsCount = 0;
+    if (media_or_ad.play_count) {
+      viewsCount = media_or_ad.play_count;
+    } else if (media_or_ad.ig_play_count) {
+      viewsCount = media_or_ad.ig_play_count;
+    }
+    const created_at = media_or_ad.taken_at
+      ? new Date(media_or_ad.taken_at * 1000)
+      : new Date();
+    const post_url = `https://www.instagram.com/p/${codeFromUrl}/`;
+    const image_url = media_or_ad.image_versions2?.candidates?.[0]?.url || "";
+    const video_url = media_or_ad.video_versions?.[0]?.url || "";
+    const post = new Post({
+      platform: "Instagram",
+      post_id,
+      author_id,
+      profile_pic,
+      username,
+      caption,
+      image_url,
+      video_url,
+      likesCount,
+      commentsCount,
+      viewsCount,
+      created_at,
+      post_url,
+      topic_ids: [topicId],
+    });
+    await post.save();
+    return post;
+  } catch (error) {
+    console.error("❌ Error fetching or storing data:", error);
+    throw error;
+  }
+};
+
+/**
  * Fetch and store YouTube videos recursively until MAX_POSTS (100) is reached.
  * @param keyword - The search keyword for fetching videos.
  * @param topicId - The topic ID associated with these videos.
  */
-export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: string): Promise<void> => {
+export const fetchAndStoreYoutubeVideos = async (
+  keyword: string,
+  topicId: string
+): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let nextPageToken = "";
     let searchApiCallCount = 0; // Counter for search API calls only
     const MAX_SEARCH_API_CALLS = 2; // Maximum number of search API calls allowed
 
-    while (totalPostsStored < MAX_POSTS && searchApiCallCount < MAX_SEARCH_API_CALLS) {
+    while (
+      totalPostsStored < MAX_POSTS &&
+      searchApiCallCount < MAX_SEARCH_API_CALLS
+    ) {
       searchApiCallCount++;
-      console.log(`🔄 Making YouTube Search API call #${searchApiCallCount}/${MAX_SEARCH_API_CALLS}`);
+      console.log(
+        `🔄 Making YouTube Search API call #${searchApiCallCount}/${MAX_SEARCH_API_CALLS}`
+      );
 
       const response = await axios.get(
         `${process.env.YOUTUBE_API_URL}/search?q=${keyword}&part=snippet&maxResults=100&pageToken=${nextPageToken}&key=${process.env.YOUTUBE_API_KEY}`
@@ -175,7 +312,7 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
         if (totalPostsStored >= MAX_POSTS) break;
 
         const channelId = video.snippet.channelId;
-        
+
         // Create or fetch the author
         const author = await createYoutubeAuthor(channelId);
         if (!author) {
@@ -201,7 +338,7 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
         );
 
         const statistics = statsResponse.data.items[0]?.statistics || {};
-        
+
         postsData.push(
           new Post({
             platform: "Youtube",
@@ -241,12 +378,16 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
       }
 
       if (searchApiCallCount >= MAX_SEARCH_API_CALLS) {
-        console.log(`🚀 Reached maximum search API call limit (${MAX_SEARCH_API_CALLS}). Stopping.`);
+        console.log(
+          `🚀 Reached maximum search API call limit (${MAX_SEARCH_API_CALLS}). Stopping.`
+        );
         break;
       }
     }
 
-    console.log(`🚀 YouTube video fetching complete! Made ${searchApiCallCount} search API calls.`);
+    console.log(
+      `🚀 YouTube video fetching complete! Made ${searchApiCallCount} search API calls.`
+    );
   } catch (error) {
     console.error("❌ Error fetching or storing data:", error);
     throw error;
@@ -258,7 +399,10 @@ export const fetchAndStoreYoutubeVideos = async (keyword: string, topicId: strin
  * @param keyword - The search keyword for fetching posts.
  * @param topicId - The topic ID associated with these posts.
  */
-export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string): Promise<void> => {
+export const fetchAndStoreTwitterPosts = async (
+  keyword: string,
+  topicId: string
+): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let nextCursor: string | null = null;
@@ -299,7 +443,9 @@ export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string
         // Check if post already exists
         const existingPost = await Post.findOne({ post_id: tweet.id_str });
         if (existingPost) {
-          console.log(`⚠️ Skipping tweet ${tweet.id_str} as it already exists.`);
+          console.log(
+            `⚠️ Skipping tweet ${tweet.id_str} as it already exists.`
+          );
           continue; // Skip if post already exists
         }
 
@@ -313,14 +459,16 @@ export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string
             profile_pic: tweet.user.profile_image_url_https,
             followers_count: tweet.user.followers_count,
             posts_count: tweet.user.statuses_count,
-            profile_link: `https://twitter.com/${tweet.user.screen_name}`
+            profile_link: `https://twitter.com/${tweet.user.screen_name}`,
           });
 
           // Save the author to the database
           await author.save();
           console.log(`✅ Created author: ${author.username}`);
         } else {
-          console.log(`⚠️ Author ${author.username} already exists. Using existing author.`);
+          console.log(
+            `⚠️ Author ${author.username} already exists. Using existing author.`
+          );
         }
 
         const postUrl = `https://twitter.com/${tweet.user.screen_name}/status/${tweet.id_str}`;
@@ -328,7 +476,11 @@ export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string
 
         // Extract image URL from entities.media if it exists
         let imageUrl = "";
-        if (tweet.entities && tweet.entities.media && tweet.entities.media.length > 0) {
+        if (
+          tweet.entities &&
+          tweet.entities.media &&
+          tweet.entities.media.length > 0
+        ) {
           imageUrl = tweet.entities.media[0].media_url_https || "";
         }
 
@@ -377,6 +529,120 @@ export const fetchAndStoreTwitterPosts = async (keyword: string, topicId: string
   }
 };
 
+/**
+ * fetch a twitter post by url
+ *
+ * @param url - The url of the post
+ * @param topicId - The topic ID associated with these posts.
+ */
+export const fetchTwitterPostByUrl = async (
+  url: string,
+  topicId: string
+): Promise<IPost | null> => {
+  try {
+    if (!url) {
+      console.error("❌ Invalid Twitter URL");
+      return null;
+    }
+
+    // Extract the post ID from the URL
+    const postIdMatch = url.match(/\/status\/(\d+)/);
+    if (!postIdMatch) {
+      console.error("❌ Could not extract post ID from Twitter URL");
+      return null;
+    }
+
+    const postId = postIdMatch[1];
+    console.log(`🔄 Fetching Twitter post with ID: ${postId}`);
+
+    // Check if post already exists
+    const existingPost = await Post.findOne({ post_id: postId });
+    if (existingPost) {
+      console.log(`⚠️ Skipping tweet ${postId} as it already exists.`);
+      return existingPost;
+    }
+
+    // Fetch the tweet using the Twitter API
+    const response = await axios.get(
+      `${process.env.SOCIAL_TOOLS_API_URL}/tweets/${postId}`,
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${process.env.SOCIAL_TOOLS_API_KEY || ""}`,
+        },
+      }
+    );
+
+    const tweet = response.data;
+
+    if (!tweet || !tweet.id_str) {
+      console.error("❌ Invalid API response format");
+      return null;
+    }
+
+    // Create or fetch the author
+    let author = await Author.findOne({ author_id: tweet.user.id_str });
+    if (!author) {
+      // Create author directly from tweet data if not exists
+      author = new Author({
+        author_id: tweet.user.id_str,
+        username: tweet.user.screen_name,
+        profile_pic: tweet.user.profile_image_url_https,
+        followers_count: tweet.user.followers_count,
+        posts_count: tweet.user.statuses_count,
+        profile_link: `https://twitter.com/${tweet.user.screen_name}`,
+      });
+
+      // Save the author to the database
+      await author.save();
+      console.log(`✅ Created author: ${author.username}`);
+    } else {
+      console.log(
+        `⚠️ Author ${author.username} already exists. Using existing author.`
+      );
+    }
+
+    const postUrl = `https://twitter.com/${tweet.user.screen_name}/status/${tweet.id_str}`;
+    const createdAt = new Date(tweet.tweet_created_at);
+
+    // Extract image URL from entities.media if it exists
+    let imageUrl = "";
+    if (
+      tweet.entities &&
+      tweet.entities.media &&
+      tweet.entities.media.length > 0
+    ) {
+      imageUrl = tweet.entities.media[0].media_url_https || "";
+    }
+
+    // Create the post
+    const post = new Post({
+      platform: "Twitter",
+      post_id: tweet.id_str,
+      author_id: author.author_id,
+      profile_pic: tweet.user.profile_image_url_https || "",
+      username: tweet.user.screen_name,
+      caption: tweet.full_text || tweet.text || "",
+      image_url: imageUrl,
+      created_at: createdAt,
+      post_url: postUrl,
+      likesCount: tweet.favorite_count || 0,
+      commentsCount: tweet.reply_count || 0,
+      viewsCount: tweet.views_count || 0,
+      topic_ids: [topicId], // Add topic reference
+    });
+
+    await post.save();
+    console.log(
+      `✅ Successfully fetched and saved Twitter post: ${tweet.id_str}`
+    );
+    return post;
+  } catch (error) {
+    console.error("❌ Error fetching or storing data:", error);
+    throw error;
+  }
+};
+
 interface FilterOptions {
   platforms?: string[];
   dateRange?: { start: Date | null; end: Date | null };
@@ -390,13 +656,18 @@ interface FilterOptions {
  * @param keyword - The keyword to search for.
  * @param topicId - The topic ID associated with these posts.
  */
-export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: string): Promise<void> => {
+export const fetchAndStoreGoogleNewsPosts = async (
+  keyword: string,
+  topicId: string
+): Promise<void> => {
   let totalPostsStored = 0;
   let startIndex = 0; // For pagination
 
   try {
     while (totalPostsStored < MAX_POSTS) {
-      console.log(`🔄 Fetching Google News for keyword: ${keyword} (startIndex: ${startIndex})`);
+      console.log(
+        `🔄 Fetching Google News for keyword: ${keyword} (startIndex: ${startIndex})`
+      );
 
       const response = await getJson({
         engine: "google_news",
@@ -404,13 +675,19 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
         gl: "us",
         hl: "en",
         start: startIndex, // Add pagination parameter
-        api_key: process.env.SERP_API_KEY || ""
+        api_key: process.env.SERP_API_KEY || "",
       });
 
       const newsResults = response.news_results;
 
-      if (!newsResults || !Array.isArray(newsResults) || newsResults.length === 0) {
-        console.log("⚠️ No more news results available or invalid response format");
+      if (
+        !newsResults ||
+        !Array.isArray(newsResults) ||
+        newsResults.length === 0
+      ) {
+        console.log(
+          "⚠️ No more news results available or invalid response format"
+        );
         break;
       }
 
@@ -433,7 +710,10 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
         // Create a news author from the source
         const newsSource = article.source || null;
         if (!newsSource || !newsSource.name) {
-          console.log("⚠️ Skipping article due to invalid source:", article.title);
+          console.log(
+            "⚠️ Skipping article due to invalid source:",
+            article.title
+          );
           continue;
         }
         const author = await createNewsAuthor(newsSource);
@@ -466,7 +746,9 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
       if (postsData.length > 0) {
         await Post.insertMany(postsData);
         totalPostsStored += postsData.length;
-        console.log(`✅ Stored ${postsData.length} news articles (Total: ${totalPostsStored}/${MAX_POSTS})`);
+        console.log(
+          `✅ Stored ${postsData.length} news articles (Total: ${totalPostsStored}/${MAX_POSTS})`
+        );
       } else {
         console.log("⚠️ No new articles found");
         break;
@@ -479,9 +761,9 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
 
       // Update startIndex for next page (typically Google uses 10 results per page)
       startIndex += newsResults.length;
-      
+
       // Add a small delay to avoid rate limiting
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
 
     console.log("🚀 Google News fetching complete!");
@@ -496,34 +778,37 @@ export const fetchAndStoreGoogleNewsPosts = async (keyword: string, topicId: str
  * @param keyword - The keyword to search for.
  * @param topicId - The topic ID associated with these posts.
  */
-export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string): Promise<void> => {
+export const fetchAndStoreRedditPosts = async (
+  keyword: string,
+  topicId: string
+): Promise<void> => {
   try {
     let totalPostsStored = 0;
     let after: string | null = null;
     const MAX_POSTS = 100; // Define maximum posts to fetch
-    
+
     // Authenticate with Reddit
-    console.log('🔑 Authenticating with Reddit API...');
+    console.log("🔑 Authenticating with Reddit API...");
     const authResponse = await axios.post(
-      'https://www.reddit.com/api/v1/access_token',
+      "https://www.reddit.com/api/v1/access_token",
       new URLSearchParams({
-        grant_type: 'password',
-        username: process.env.REDDIT_USERNAME || '',
-        password: process.env.REDDIT_PASSWORD || '',
+        grant_type: "password",
+        username: process.env.REDDIT_USERNAME || "",
+        password: process.env.REDDIT_PASSWORD || "",
       }).toString(),
       {
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${Buffer.from(
+          "Content-Type": "application/x-www-form-urlencoded",
+          Authorization: `Basic ${Buffer.from(
             `${process.env.REDDIT_CLIENT_ID}:${process.env.REDDIT_CLIENT_SECRET}`
-          ).toString('base64')}`,
-          'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
-        }
+          ).toString("base64")}`,
+          "User-Agent": "MyApp/1.0.0 (by /u/your_username)",
+        },
       }
     );
-    
+
     const accessToken = authResponse.data.access_token;
-    console.log('✅ Successfully authenticated with Reddit');
+    console.log("✅ Successfully authenticated with Reddit");
 
     // Create a cache for author data to avoid duplicate requests
     const authorCache: Record<string, any> = {};
@@ -539,8 +824,8 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
 
       const response = await axios.get(url, {
         headers: {
-          'User-Agent': 'MyApp/1.0.0 (by /u/your_username)',
-          'Authorization': `Bearer ${accessToken}`,
+          "User-Agent": "MyApp/1.0.0 (by /u/your_username)",
+          Authorization: `Bearer ${accessToken}`,
         },
       });
 
@@ -555,54 +840,58 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
 
       for (const post of data.data.children) {
         if (totalPostsStored >= MAX_POSTS) break;
-        
+
         const postData = post.data;
-        
+
         if (!postData.id || !postData.author) {
           console.log("⚠️ Skipping post due to missing required data");
           continue;
         }
 
         // Skip if author is deleted or unavailable
-        if (postData.author === '[deleted]' || !postData.author) {
+        if (postData.author === "[deleted]" || !postData.author) {
           console.log("⚠️ Skipping post due to deleted or unavailable author");
           continue;
         }
-        
+
         // Check if post already exists
         const existingPost = await Post.findOne({ post_id: postData.id });
         if (existingPost) {
           console.log(`⚠️ Skipping post ${postData.id} as it already exists.`);
           continue; // Skip if post already exists
         }
-        
+
         // Check if author already exists in database
         let author = await Author.findOne({ author_id: postData.author });
-        
+
         // If not in DB and not in cache, fetch author data
         if (!author && !authorCache[postData.author]) {
           try {
             const authorUrl = `https://oauth.reddit.com/user/${postData.author}/about.json`;
             console.log(`🔄 Fetching author data for: ${postData.author}`);
-            
+
             const authorResponse = await axios.get(authorUrl, {
               headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'User-Agent': 'MyApp/1.0.0 (by /u/your_username)'
-              }
+                Authorization: `Bearer ${accessToken}`,
+                "User-Agent": "MyApp/1.0.0 (by /u/your_username)",
+              },
             });
-            
+
             const authorData = authorResponse.data.data;
             authorCache[postData.author] = {
               author_id: authorData.id,
               username: authorData.name,
-              profile_pic: authorData.icon_img || authorData.snoovatar_img || "",
+              profile_pic:
+                authorData.icon_img || authorData.snoovatar_img || "",
               followers_count: authorData.link_karma + authorData.comment_karma, // Using karma as a proxy for popularity
               posts_count: 0, // Reddit doesn't easily provide this
-              profile_link: `https://www.reddit.com/user/${postData.author}`
+              profile_link: `https://www.reddit.com/user/${postData.author}`,
             };
           } catch (error: any) {
-            console.error(`❌ Error fetching author data for ${postData.author}:`, error.message);
+            console.error(
+              `❌ Error fetching author data for ${postData.author}:`,
+              error.message
+            );
             // Create a basic author object if the request fails
             authorCache[postData.author] = {
               author_id: postData.author,
@@ -610,20 +899,20 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
               profile_pic: "",
               followers_count: 0,
               posts_count: 0,
-              profile_link: `https://www.reddit.com/user/${postData.author}`
+              profile_link: `https://www.reddit.com/user/${postData.author}`,
             };
           }
         }
-        
+
         // Create or get the author
         if (!author) {
           try {
             // Use data from cache
             const authorData = authorCache[postData.author];
-            
+
             // Try to find one more time (in case it was created between our earlier check and now)
             author = await Author.findOne({ author_id: authorData.author_id });
-            
+
             if (!author) {
               // Use findOneAndUpdate with upsert to prevent race conditions
               author = await Author.findOneAndUpdate(
@@ -634,21 +923,28 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
                   profile_pic: authorData.profile_pic,
                   followers_count: authorData.followers_count,
                   posts_count: authorData.posts_count,
-                  profile_link: authorData.profile_link
+                  profile_link: authorData.profile_link,
                 },
                 { new: true, upsert: true }
               );
               console.log(`✅ Created author: ${author?.username}`);
             } else {
-              console.log(`⚠️ Author ${author?.username} already exists. Using existing author.`);
+              console.log(
+                `⚠️ Author ${author?.username} already exists. Using existing author.`
+              );
             }
           } catch (error) {
-            console.error(`❌ Error creating author: ${postData.author}`, error);
+            console.error(
+              `❌ Error creating author: ${postData.author}`,
+              error
+            );
             // Skip this post if we can't create the author
             continue;
           }
         } else {
-          console.log(`⚠️ Author ${author.username} already exists. Using existing author.`);
+          console.log(
+            `⚠️ Author ${author.username} already exists. Using existing author.`
+          );
         }
 
         const postUrl = `https://www.reddit.com${postData.permalink}`;
@@ -656,18 +952,29 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
 
         // Extract image URL if it exists
         let imageUrl = "";
-        if (postData.preview && 
-            postData.preview.images && 
-            postData.preview.images.length > 0 &&
-            postData.preview.images[0].source) {
-          imageUrl = postData.preview.images[0].source.url.replace(/&amp;/g, '&') || "";
-        } else if (postData.thumbnail && postData.thumbnail !== "self" && postData.thumbnail !== "default") {
+        if (
+          postData.preview &&
+          postData.preview.images &&
+          postData.preview.images.length > 0 &&
+          postData.preview.images[0].source
+        ) {
+          imageUrl =
+            postData.preview.images[0].source.url.replace(/&amp;/g, "&") || "";
+        } else if (
+          postData.thumbnail &&
+          postData.thumbnail !== "self" &&
+          postData.thumbnail !== "default"
+        ) {
           imageUrl = postData.thumbnail;
         }
-        
+
         // Extract video URL if it exists
         let videoUrl = "";
-        if (postData.is_video && postData.media && postData.media.reddit_video) {
+        if (
+          postData.is_video &&
+          postData.media &&
+          postData.media.reddit_video
+        ) {
           videoUrl = postData.media.reddit_video.fallback_url || "";
         }
 
@@ -679,7 +986,7 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
             author_id: author?.author_id || "",
             profile_pic: author?.profile_pic || "",
             username: postData.author,
-            caption: postData.selftext || "", 
+            caption: postData.selftext || "",
             title: postData.title || "",
             image_url: imageUrl,
             video_url: videoUrl,
@@ -690,7 +997,7 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
             viewsCount: 0, // Reddit doesn't provide view counts
             topic_ids: [topicId], // Add topic reference
             flagged: false,
-            dismissed: false
+            dismissed: false,
           })
         );
       }
@@ -709,11 +1016,14 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
                 // Duplicate key error, just log and continue
                 console.log(`⚠️ Skipping duplicate post: ${post.post_id}`);
               } else {
-                console.error(`❌ Error saving post ${post.post_id}:`, error.message);
+                console.error(
+                  `❌ Error saving post ${post.post_id}:`,
+                  error.message
+                );
               }
             }
           }
-          
+
           totalPostsStored += successCount;
           console.log(
             `✅ Stored ${successCount} Reddit posts (Total: ${totalPostsStored}/${MAX_POSTS})`
@@ -741,22 +1051,27 @@ export const fetchAndStoreRedditPosts = async (keyword: string, topicId: string)
   }
 };
 
-export const getAllPosts = async (skip: number, limit: number, filters: FilterOptions, userId: string) => {
+export const getAllPosts = async (
+  skip: number,
+  limit: number,
+  filters: FilterOptions,
+  userId: string
+) => {
   try {
     // Build base query for filters
     const baseQuery: any = {
       $or: [
         { dismissed: false },
-        { dismissed: { $exists: false } } // Include posts where dismissed field doesn't exist
-      ]
+        { dismissed: { $exists: false } }, // Include posts where dismissed field doesn't exist
+      ],
     };
-    
+
     // Process keyword with Boolean search syntax
     if (filters.keyword) {
       // If we have a keyword, we'll focus the search on the caption field
       // using the Boolean search syntax
       const searchQuery = processBooleanSearch(filters.keyword);
-      
+
       // Apply the search query to the caption field
       if (searchQuery) {
         // Instead of assigning directly to baseQuery.caption,
@@ -765,13 +1080,13 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
       } else {
         // Fallback to simple search if Boolean parsing fails
         baseQuery.$or = [
-          { platform: { $regex: filters.keyword, $options: 'i' } },
-          { username: { $regex: filters.keyword, $options: 'i' } },
-          { caption: { $regex: filters.keyword, $options: 'i' } }
+          { platform: { $regex: filters.keyword, $options: "i" } },
+          { username: { $regex: filters.keyword, $options: "i" } },
+          { caption: { $regex: filters.keyword, $options: "i" } },
         ];
       }
     }
-    
+
     if (filters.platforms && filters.platforms.length > 0) {
       baseQuery.platform = { $in: filters.platforms };
     }
@@ -780,12 +1095,12 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
       const startDate = new Date(filters.dateRange.start);
       const endDate = new Date(filters.dateRange.end);
       endDate.setHours(23, 59, 59, 999);
-      
+
       baseQuery.created_at = { $gte: startDate, $lte: endDate };
     }
 
     if (filters.flagStatus) {
-      baseQuery.flagged = filters.flagStatus === 'flagged';
+      baseQuery.flagged = filters.flagStatus === "flagged";
       baseQuery.flaggedBy = { $in: [userId] };
     }
 
@@ -793,33 +1108,30 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
 
     // Get total counts first (unaffected by pagination)
     const totalPosts = await Post.countDocuments(baseQuery);
-    const totalFlaggedPosts = await Post.countDocuments({ ...baseQuery, flagged: true });
-    
-    // Get total counts without filters (but still excluding dismissed posts)
-    const totalAllPosts = await Post.countDocuments({ 
-      $or: [
-        { dismissed: false },
-        { dismissed: { $exists: false } }
-      ]
+    const totalFlaggedPosts = await Post.countDocuments({
+      ...baseQuery,
+      flagged: true,
     });
-    const totalAllFlagged = await Post.countDocuments({ 
-      $or: [
-        { dismissed: false },
-        { dismissed: { $exists: false } }
-      ],
-      flagged: true 
+
+    // Get total counts without filters (but still excluding dismissed posts)
+    const totalAllPosts = await Post.countDocuments({
+      $or: [{ dismissed: false }, { dismissed: { $exists: false } }],
+    });
+    const totalAllFlagged = await Post.countDocuments({
+      $or: [{ dismissed: false }, { dismissed: { $exists: false } }],
+      flagged: true,
     });
 
     // Then get paginated data
     let query = Post.find(baseQuery);
 
     // Apply sorting
-    if (filters.sortBy === 'engagement') {
+    if (filters.sortBy === "engagement") {
       query = query.sort({
         likesCount: -1,
-        commentsCount: -1
+        commentsCount: -1,
       });
-    } else if (filters.sortBy === 'oldest') {
+    } else if (filters.sortBy === "oldest") {
       query = query.sort({ created_at: 1 });
     } else {
       query = query.sort({ created_at: -1 });
@@ -833,7 +1145,7 @@ export const getAllPosts = async (skip: number, limit: number, filters: FilterOp
       totalPosts,
       totalFlaggedPosts,
       totalAllPosts,
-      totalAllFlagged
+      totalAllFlagged,
     };
   } catch (error) {
     console.error("❌ Error fetching posts:", error);
@@ -851,23 +1163,25 @@ function processBooleanSearch(query: string): any {
   try {
     // Track the current position in parsing
     let position = 0;
-    
+
     // Main parsing function that handles the query string
     function parseExpression(): any {
       // Skip whitespace
       while (position < query.length && /\s/.test(query[position])) {
         position++;
       }
-      
+
       if (position >= query.length) return null;
-      
+
       // Parse OR expressions (lowest precedence)
       const left = parseAND();
       if (position < query.length) {
         // Look for OR operator
-        if (position + 2 < query.length && 
-            query.substring(position, position + 2).toUpperCase() === "OR" && 
-            /\s/.test(query[position + 2])) {
+        if (
+          position + 2 < query.length &&
+          query.substring(position, position + 2).toUpperCase() === "OR" &&
+          /\s/.test(query[position + 2])
+        ) {
           position += 3; // Skip "OR" and the space
           const right = parseExpression();
           if (right) {
@@ -875,25 +1189,27 @@ function processBooleanSearch(query: string): any {
           }
         }
       }
-      
+
       return left;
     }
-    
+
     // Parse AND expressions (medium precedence)
     function parseAND(): any {
       // Parse NOT expressions first (higher precedence)
       let left = parseNOT();
-      
+
       // Look for AND operator
       while (position < query.length) {
         // Skip whitespace
         while (position < query.length && /\s/.test(query[position])) {
           position++;
         }
-        
-        if (position + 3 < query.length && 
-            query.substring(position, position + 3).toUpperCase() === "AND" && 
-            /\s/.test(query[position + 3])) {
+
+        if (
+          position + 3 < query.length &&
+          query.substring(position, position + 3).toUpperCase() === "AND" &&
+          /\s/.test(query[position + 3])
+        ) {
           position += 4; // Skip "AND" and the space
           const right = parseNOT();
           if (right) {
@@ -910,21 +1226,23 @@ function processBooleanSearch(query: string): any {
           break;
         }
       }
-      
+
       return left;
     }
-    
+
     // Parse NOT expressions (high precedence)
     function parseNOT(): any {
       // Skip whitespace
       while (position < query.length && /\s/.test(query[position])) {
         position++;
       }
-      
+
       // Check for NOT operator
-      if (position + 3 < query.length && 
-          query.substring(position, position + 3).toUpperCase() === "NOT" && 
-          /\s/.test(query[position + 3])) {
+      if (
+        position + 3 < query.length &&
+        query.substring(position, position + 3).toUpperCase() === "NOT" &&
+        /\s/.test(query[position + 3])
+      ) {
         position += 4; // Skip "NOT" and the space
         const expr = parseTerm();
         if (expr) {
@@ -934,133 +1252,141 @@ function processBooleanSearch(query: string): any {
           return { $nor: [expr] };
         }
       }
-      
+
       return parseTerm();
     }
-    
+
     // Parse basic terms (highest precedence)
     function parseTerm(): any {
       // Skip whitespace
       while (position < query.length && /\s/.test(query[position])) {
         position++;
       }
-      
+
       if (position >= query.length) return null;
-      
+
       // Handle parentheses for grouping
-      if (query[position] === '(') {
+      if (query[position] === "(") {
         position++; // Skip opening parenthesis
         const expr = parseExpression();
-        
+
         // Skip whitespace
         while (position < query.length && /\s/.test(query[position])) {
           position++;
         }
-        
-        if (position < query.length && query[position] === ')') {
+
+        if (position < query.length && query[position] === ")") {
           position++; // Skip closing parenthesis
           return expr;
         } else {
           throw new Error("Missing closing parenthesis");
         }
       }
-      
+
       // Handle quoted phrases
       if (query[position] === '"') {
         position++; // Skip opening quote
         let phrase = "";
-        
+
         while (position < query.length && query[position] !== '"') {
           phrase += query[position];
           position++;
         }
-        
+
         if (position < query.length) {
           position++; // Skip closing quote
           // Return a proper regex query object
-          return { caption: { $regex: escapeRegExp(phrase), $options: 'i' } };
+          return { caption: { $regex: escapeRegExp(phrase), $options: "i" } };
         } else {
           throw new Error("Missing closing quote");
         }
       }
-      
+
       // Handle NEAR operator
       const nearRegex = /^(\w+)\s+NEAR\/(\d+)\s+(\w+)/i;
       const nearSubstring = query.substring(position);
       const nearMatch = nearSubstring.match(nearRegex);
-      
+
       if (nearMatch) {
         const word1 = nearMatch[1];
         const distance = parseInt(nearMatch[2]);
         const word2 = nearMatch[3];
-        
+
         // Skip the matched NEAR expression
         position += nearMatch[0].length;
-        
+
         // For NEAR, we create a regex that matches both words within N words of each other
-        const pattern = `\\b${escapeRegExp(word1)}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(word2)}\\b|\\b${escapeRegExp(word2)}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(word1)}\\b`;
-        return { caption: { $regex: pattern, $options: 'i' } };
+        const pattern = `\\b${escapeRegExp(
+          word1
+        )}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(
+          word2
+        )}\\b|\\b${escapeRegExp(
+          word2
+        )}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(word1)}\\b`;
+        return { caption: { $regex: pattern, $options: "i" } };
       }
-      
+
       // Handle wildcards
       let term = "";
       let hasWildcard = false;
-      
-      while (position < query.length && 
-             !/[\s()"]/.test(query[position]) && 
-             !query.substring(position).match(/^(AND|OR|NOT)\b/i)) {
-        if (query[position] === '*') {
+
+      while (
+        position < query.length &&
+        !/[\s()"]/.test(query[position]) &&
+        !query.substring(position).match(/^(AND|OR|NOT)\b/i)
+      ) {
+        if (query[position] === "*") {
           hasWildcard = true;
         }
         term += query[position];
         position++;
       }
-      
+
       if (!term) return null;
-      
+
       // Process wildcards
       if (hasWildcard) {
-        const pattern = escapeRegExp(term).replace(/\\\*/g, '.*');
-        return { caption: { $regex: pattern, $options: 'i' } };
+        const pattern = escapeRegExp(term).replace(/\\\*/g, ".*");
+        return { caption: { $regex: pattern, $options: "i" } };
       }
-      
+
       // Regular term
-      return { caption: { $regex: escapeRegExp(term), $options: 'i' } };
+      return { caption: { $regex: escapeRegExp(term), $options: "i" } };
     }
-    
+
     // Helper function to escape special regex characters
     function escapeRegExp(string: string): string {
-      return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     }
-    
+
     // Let's add some debugging to see what's going on
     console.log("🔍 Original query:", query);
     const result = parseExpression();
     console.log("🔍 Parsed query object:", JSON.stringify(result, null, 2));
-    
+
     // One final check to ensure we have a valid MongoDB query object
     if (result === null) {
-      return { caption: { $regex: escapeRegExp(query), $options: 'i' } };
+      return { caption: { $regex: escapeRegExp(query), $options: "i" } };
     }
-    
+
     return result;
   } catch (error) {
     console.error("❌ Error parsing Boolean search:", error, "Query:", query);
     // Fallback to simple search on error
-    return { caption: { $regex: escapeRegExp(query), $options: 'i' } };
+    return { caption: { $regex: escapeRegExp(query), $options: "i" } };
   }
 }
 
 // Move this helper function outside the main function to make it accessible
 function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 export const togglePostFlagService = async (postId: string, userId: string) => {
   try {
     const post = await Post.findById(postId);
     if (!post) {
-      throw new Error('Post not found');
+      throw new Error("Post not found");
     }
 
     const userIdObj = new mongoose.Types.ObjectId(userId);
@@ -1071,11 +1397,11 @@ export const togglePostFlagService = async (postId: string, userId: string) => {
       post.flaggedBy.push(userIdObj);
       post.flagged = true;
       post.flagTimestamp = new Date();
-      post.flaggedStatus = 'pending';
+      post.flaggedStatus = "pending";
     } else {
       // Remove flag
-      post.flaggedBy = post.flaggedBy.filter(id => !id.equals(userIdObj));
-      
+      post.flaggedBy = post.flaggedBy.filter((id) => !id.equals(userIdObj));
+
       if (post.flaggedBy.length === 0) {
         post.flagged = false;
         post.flagTimestamp = null;
@@ -1095,10 +1421,10 @@ export const updatePostFlagStatus = async (postId: string, status: string) => {
   try {
     const post = await Post.findById(postId);
     if (!post) {
-      throw new Error('Post not found');
+      throw new Error("Post not found");
     }
 
-    post.flaggedStatus = status as 'pending' | 'reviewed' | 'escalated' | null;
+    post.flaggedStatus = status as "pending" | "reviewed" | "escalated" | null;
     await post.save();
     return post;
   } catch (error) {
@@ -1116,19 +1442,21 @@ export const getPlatformStatistics = async (): Promise<any> => {
           from: "authors", // Join with authors collection
           localField: "author_id",
           foreignField: "author_id",
-          as: "authorDetails"
-        }
+          as: "authorDetails",
+        },
       },
       {
         $unwind: {
           path: "$authorDetails",
-          preserveNullAndEmptyArrays: true // Preserve posts without authors
-        }
+          preserveNullAndEmptyArrays: true, // Preserve posts without authors
+        },
       },
       {
         $group: {
           _id: "$platform",
-          totalFollowers: { $sum: { $ifNull: ["$authorDetails.followers_count", 0] } }, // Sum followers from author details
+          totalFollowers: {
+            $sum: { $ifNull: ["$authorDetails.followers_count", 0] },
+          }, // Sum followers from author details
           totalViews: { $sum: "$viewsCount" },
         },
       },
@@ -1146,8 +1474,8 @@ export const getPostStatistics = async () => {
   try {
     const totalPosts = await Post.countDocuments({});
     const flaggedPosts = await Post.countDocuments({ flagged: true });
-    const factCheckedPosts = await Post.countDocuments({ 
-      flaggedStatus: { $in: ['reviewed', 'escalated'] } 
+    const factCheckedPosts = await Post.countDocuments({
+      flaggedStatus: { $in: ["reviewed", "escalated"] },
     });
     const flaggedAuthors = await Author.countDocuments({ flagged: true });
 
@@ -1155,7 +1483,7 @@ export const getPostStatistics = async () => {
       totalPosts,
       flaggedPosts,
       factCheckedPosts,
-      flaggedAuthors
+      flaggedAuthors,
     };
   } catch (error) {
     console.error("❌ Error fetching post statistics:", error);
@@ -1178,14 +1506,15 @@ export const getFlaggedPostsService = async (filters: {
 
     // Apply date range filter
     if (filters.dateRange?.from && filters.dateRange?.to) {
-      query = query.where('flagTimestamp')
+      query = query
+        .where("flagTimestamp")
         .gte(new Date(filters.dateRange.from).getTime())
         .lte(new Date(filters.dateRange.to).getTime());
     }
 
     // Apply status filter
     if (filters.status) {
-      query = query.where('flaggedStatus').equals(filters.status);
+      query = query.where("flaggedStatus").equals(filters.status);
     }
 
     // Get total count for pagination
@@ -1195,13 +1524,13 @@ export const getFlaggedPostsService = async (filters: {
     query = query
       .skip(skip)
       .limit(limit)
-      .populate('flaggedBy', 'name email')
+      .populate("flaggedBy", "name email")
       .sort({ flagTimestamp: -1 }); // Sort by most recently flagged
 
     const posts = await query.exec();
 
     // Transform posts
-    const transformedPosts = posts.map(post => ({
+    const transformedPosts = posts.map((post) => ({
       id: post._id,
       content: post.caption || post.title,
       author: post.username,
@@ -1213,8 +1542,8 @@ export const getFlaggedPostsService = async (filters: {
       engagement: {
         likes: post.likesCount,
         comments: post.commentsCount,
-        views: post.viewsCount
-      }
+        views: post.viewsCount,
+      },
     }));
 
     return {
@@ -1224,8 +1553,8 @@ export const getFlaggedPostsService = async (filters: {
         totalPages: Math.ceil(totalCount / limit),
         totalItems: totalCount,
         hasNextPage: page * limit < totalCount,
-        hasPrevPage: page > 1
-      }
+        hasPrevPage: page > 1,
+      },
     };
   } catch (error) {
     console.error("❌ Error fetching flagged posts:", error);
@@ -1235,11 +1564,13 @@ export const getFlaggedPostsService = async (filters: {
 
 export const getPostDetailsService = async (postId: string) => {
   try {
-    const post = await Post.findById(postId)
-      .populate<{ flaggedBy: IUser[] }>('flaggedBy', 'name email');
+    const post = await Post.findById(postId).populate<{ flaggedBy: IUser[] }>(
+      "flaggedBy",
+      "name email"
+    );
 
     if (!post) {
-      throw new Error('Post not found');
+      throw new Error("Post not found");
     }
 
     // Fetch author details separately using author_id
@@ -1250,16 +1581,16 @@ export const getPostDetailsService = async (postId: string) => {
       content: post.caption || post.title,
       author: {
         id: post.author_id,
-        username: author ? author.username : post.username // Fallback to post username if author not found
+        username: author ? author.username : post.username, // Fallback to post username if author not found
       },
-      flaggedBy: post.flaggedBy.map(user => ({
+      flaggedBy: post.flaggedBy.map((user) => ({
         id: user._id,
         name: user.name,
-        email: user.email
+        email: user.email,
       })),
       status: post.flaggedStatus,
       timestamp: post.flagTimestamp,
-      platform: post.platform
+      platform: post.platform,
     };
   } catch (error) {
     console.error("❌ Error fetching post details:", error);
@@ -1273,11 +1604,11 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
     const now = new Date();
     const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
     const istNow = new Date(now.getTime() + istOffset);
-    
+
     // Set to start of day in IST (00:00:00)
     const istToday = new Date(istNow);
     istToday.setUTCHours(0, 0, 0, 0);
-    
+
     // Set to end of day in IST (23:59:59.999)
     const istTomorrow = new Date(istToday);
     istTomorrow.setUTCDate(istTomorrow.getUTCDate() + 1);
@@ -1286,18 +1617,21 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
     const utcToday = new Date(istToday.getTime() - istOffset);
     const utcTomorrow = new Date(istTomorrow.getTime() - istOffset);
 
-    console.log("Current time (IST):", 
-      new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+    console.log(
+      "Current time (IST):",
+      new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
     );
-    console.log("Query range (UTC):", 
+    console.log(
+      "Query range (UTC):",
       utcToday.toISOString(),
       "to",
       utcTomorrow.toISOString()
     );
-    console.log("Query range (IST):", 
-      utcToday.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
+    console.log(
+      "Query range (IST):",
+      utcToday.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
       "to",
-      utcTomorrow.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+      utcTomorrow.toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })
     );
 
     // Get all active topics
@@ -1307,24 +1641,28 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
     const topicPosts = await Promise.all(
       topics.map(async (topic) => {
         const posts = await Post.find({
-          created_at: { 
+          created_at: {
             $gte: utcToday,
-            $lt: utcTomorrow
+            $lt: utcTomorrow,
           },
-          topic_ids: { $in: topic._id }
-        }).sort({
-          likesCount: -1,
-          commentsCount: -1
-        }).limit(5);
+          topic_ids: { $in: topic._id },
+        })
+          .sort({
+            likesCount: -1,
+            commentsCount: -1,
+          })
+          .limit(5);
 
-        const totalEngagement = posts.reduce((sum, post) => 
-          sum + (post.likesCount || 0) + (post.commentsCount || 0), 0
+        const totalEngagement = posts.reduce(
+          (sum, post) =>
+            sum + (post.likesCount || 0) + (post.commentsCount || 0),
+          0
         );
 
         return {
           topic: topic.name,
           totalEngagement,
-          posts: posts.map(post => ({
+          posts: posts.map((post) => ({
             _id: post._id,
             content: post.caption || post.title,
             platform: post.platform,
@@ -1333,9 +1671,9 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
             post_url: post.post_url,
             engagement: {
               likes: post.likesCount || 0,
-              comments: post.commentsCount || 0
-            }
-          }))
+              comments: post.commentsCount || 0,
+            },
+          })),
         };
       })
     );
@@ -1347,18 +1685,20 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
 
     // Flatten the posts array and sort by engagement
     const allPosts = sortedTopics
-      .flatMap(topic => topic.posts)
-      .sort((a, b) => 
-        (b.engagement.likes + b.engagement.comments) - 
-        (a.engagement.likes + a.engagement.comments)
+      .flatMap((topic) => topic.posts)
+      .sort(
+        (a, b) =>
+          b.engagement.likes +
+          b.engagement.comments -
+          (a.engagement.likes + a.engagement.comments)
       );
 
     return {
       items: allPosts,
-      topicsEngagement: sortedTopics.map(t => ({
+      topicsEngagement: sortedTopics.map((t) => ({
         topic: t.topic,
-        engagement: t.totalEngagement
-      }))
+        engagement: t.totalEngagement,
+      })),
     };
   } catch (error) {
     console.error("❌ Error getting today's most discussed feed:", error);
@@ -1368,17 +1708,17 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
 
 export const getReviewedPostsService = async (limit: number = 10) => {
   try {
-    const posts = await Post.find({ flaggedStatus: 'reviewed' })
+    const posts = await Post.find({ flaggedStatus: "reviewed" })
       .sort({ flagTimestamp: -1 })
       .limit(limit);
 
     return {
-      items: posts.map(post => ({
+      items: posts.map((post) => ({
         id: post._id,
         content: post.caption || post.title,
         timestamp: post.flagTimestamp,
-        post_url: post.post_url
-      }))
+        post_url: post.post_url,
+      })),
     };
   } catch (error) {
     console.error("❌ Error fetching reviewed posts:", error);
@@ -1390,20 +1730,24 @@ export const getReviewedPostsService = async (limit: number = 10) => {
  * Rename all posts with platform "GoogleNews" to "News"
  * @returns Object containing the count of updated posts
  */
-export const renamePlatformGoogleNewsToNews = async (): Promise<{ updatedCount: number }> => {
+export const renamePlatformGoogleNewsToNews = async (): Promise<{
+  updatedCount: number;
+}> => {
   try {
     console.log("🔄 Starting platform rename operation: GoogleNews → News");
-    
+
     // Find and update all posts with platform "GoogleNews"
     const result = await Post.updateMany(
       { platform: "Google News" },
       { $set: { platform: "News" } }
     );
-    
-    console.log(`✅ Successfully renamed ${result.modifiedCount} posts from GoogleNews to News`);
-    
+
+    console.log(
+      `✅ Successfully renamed ${result.modifiedCount} posts from GoogleNews to News`
+    );
+
     return {
-      updatedCount: result.modifiedCount
+      updatedCount: result.modifiedCount,
     };
   } catch (error) {
     console.error("❌ Error renaming platform:", error);
@@ -1415,12 +1759,12 @@ export const dismissPostService = async (postId: string) => {
   try {
     const post = await Post.findById(postId);
     if (!post) {
-      throw new Error('Post not found');
+      throw new Error("Post not found");
     }
 
     // Toggle the dismissed state
     post.dismissed = !post.dismissed;
-    
+
     // Update timestamp if being dismissed
     if (post.dismissed) {
       post.dismissTimestamp = new Date();
