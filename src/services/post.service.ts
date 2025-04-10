@@ -1400,9 +1400,9 @@ export const getAllPosts = async (
       } else {
         // Fallback to simple search if Boolean parsing fails
         baseQuery.$or = [
-          { platform: { $regex: filters.keyword, $options: "i" } },
-          { username: { $regex: filters.keyword, $options: "i" } },
-          { caption: { $regex: filters.keyword, $options: "i" } },
+          { platform: { $regex: `\\b${escapeRegExp(filters.keyword)}\\b`, $options: "i" } },
+          { username: { $regex: `\\b${escapeRegExp(filters.keyword)}\\b`, $options: "i" } },
+          { caption: { $regex: `\\b${escapeRegExp(filters.keyword)}\\b`, $options: "i" } },
         ];
       }
     }
@@ -1615,8 +1615,10 @@ function processBooleanSearch(query: string): any {
 
         if (position < query.length) {
           position++; // Skip closing quote
-          // Return a proper regex query object
-          return { caption: { $regex: escapeRegExp(phrase), $options: "i" } };
+          // Return a proper regex query object with word boundaries for each word
+          const words = phrase.split(/\s+/);
+          const wordBoundaryPhrase = words.map(w => `\\b${escapeRegExp(w)}\\b`).join('\\s+');
+          return { caption: { $regex: wordBoundaryPhrase, $options: "i" } };
         } else {
           throw new Error("Missing closing quote");
         }
@@ -1636,6 +1638,7 @@ function processBooleanSearch(query: string): any {
         position += nearMatch[0].length;
 
         // For NEAR, we create a regex that matches both words within N words of each other
+        // Using word boundaries for whole word matching
         const pattern = `\\b${escapeRegExp(
           word1
         )}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(
@@ -1667,11 +1670,16 @@ function processBooleanSearch(query: string): any {
       // Process wildcards
       if (hasWildcard) {
         const pattern = escapeRegExp(term).replace(/\\\*/g, ".*");
-        return { caption: { $regex: pattern, $options: "i" } };
+        // Add word boundaries for partial wildcards (e.g., "test*" should match "testing" but not "attest")
+        // Only add the start boundary if the wildcard is not at the beginning
+        const startBoundary = term.startsWith("*") ? "" : "\\b";
+        // Only add the end boundary if the wildcard is not at the end
+        const endBoundary = term.endsWith("*") ? "" : "\\b";
+        return { caption: { $regex: `${startBoundary}${pattern}${endBoundary}`, $options: "i" } };
       }
 
-      // Regular term
-      return { caption: { $regex: escapeRegExp(term), $options: "i" } };
+      // Regular term - add word boundaries for whole word matching
+      return { caption: { $regex: `\\b${escapeRegExp(term)}\\b`, $options: "i" } };
     }
 
     // Helper function to escape special regex characters
@@ -1686,14 +1694,15 @@ function processBooleanSearch(query: string): any {
 
     // One final check to ensure we have a valid MongoDB query object
     if (result === null) {
-      return { caption: { $regex: escapeRegExp(query), $options: "i" } };
+      // Use word boundaries for simple search too
+      return { caption: { $regex: `\\b${escapeRegExp(query)}\\b`, $options: "i" } };
     }
 
     return result;
   } catch (error) {
     console.error("❌ Error parsing Boolean search:", error, "Query:", query);
-    // Fallback to simple search on error
-    return { caption: { $regex: escapeRegExp(query), $options: "i" } };
+    // Fallback to simple search on error, also with word boundaries
+    return { caption: { $regex: `\\b${escapeRegExp(query)}\\b`, $options: "i" } };
   }
 }
 
