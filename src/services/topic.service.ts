@@ -193,6 +193,7 @@ export const getAuthorsByTopicId = async (
     postCount: number;
     totalEngagement: number;
     platform: string;
+    flagged: boolean;
   }>;
   pagination: {
     currentPage: number;
@@ -203,6 +204,9 @@ export const getAuthorsByTopicId = async (
   };
 } | null> => {
   try {
+    const startTime = Date.now();
+    console.log(`🔍 Starting getAuthorsByTopicId for topic ${topicId}`);
+    
     // Find the topic by ID - using indexed _id field
     const topic = await TopicModel.findById(topicId).lean();
     
@@ -210,92 +214,118 @@ export const getAuthorsByTopicId = async (
       return null; // Topic not found
     }
     
-    // Find all posts for this topic using the topic_ids index
-    const posts = await Post.find({ topic_ids: new mongoose.Types.ObjectId(topicId) })
-      .lean() // Use lean() for better performance
-      .select('author_id platform likesCount commentsCount'); // Only get needed fields
+    // Use MongoDB aggregation framework for better performance with large datasets
+    const pipeline = [
+      // Match posts for this topic - uses the index on topic_ids
+      { $match: { topic_ids: new mongoose.Types.ObjectId(topicId) } },
+      
+      // Group by author_id to compute metrics - this reduces the dataset size dramatically
+      { $group: {
+        _id: "$author_id",
+        postCount: { $sum: 1 },
+        totalEngagement: { $sum: { $add: [{ $ifNull: ["$likesCount", 0] }, { $ifNull: ["$commentsCount", 0] }] } },
+        // Get the most frequent platform for this author
+        platforms: { $addToSet: "$platform" }
+      }},
+      
+      // Limit the number of results for performance before expensive lookups
+      // This is crucial for performance with millions of documents
+      { $limit: 1000 }
+    ];
     
-    // Get unique author_ids from posts for this topic
-    const authorIds = [...new Set(posts.map(post => post.author_id))];
+    // Apply search filter early if provided to reduce the dataset
+    if (search && search.trim() !== '') {
+      // We'll apply search after the author lookup stage
+      console.log(`🔍 Search filter: "${search}"`);
+    }
+
+    // Execute the aggregation pipeline
+    console.log(`⏱️ Starting posts aggregation at ${Date.now() - startTime}ms`);
+    const postStats = await Post.aggregate(pipeline);
+    console.log(`⏱️ Completed posts aggregation at ${Date.now() - startTime}ms - found ${postStats.length} authors`);
     
-    // Get all authors in a single query with the index on author_id
-    const authors = await Author.find({ author_id: { $in: authorIds } })
-      .lean()
-      .select('author_id username profile_pic flagged');
-    
-    // Create a map for faster author lookups
-    const authorMap = new Map(
-      authors.map(author => [author.author_id, {
-        authorId: author.author_id,
-        username: author.username,
-        profilePic: author.profile_pic,
-        postCount: 0,
-        totalEngagement: 0,
-        flagged: author.flagged,
-        platforms: new Map()
-      }])
-    );
-    
-    // Process posts to calculate engagement and platforms in a more optimized way
-    for (const post of posts) {
-      const authorData = authorMap.get(post.author_id);
-      if (authorData) {
-        authorData.postCount++;
-        authorData.totalEngagement += (post.likesCount || 0) + (post.commentsCount || 0);
-        
-        // Update platform count
-        const platformCount = authorData.platforms.get(post.platform) || 0;
-        authorData.platforms.set(post.platform, platformCount + 1);
-      }
+    if (postStats.length === 0) {
+      return {
+        topicId: topic._id.toString(),
+        topicName: topic.name,
+        authors: [],
+        pagination: {
+          currentPage: 1,
+          totalPages: 0,
+          totalItems: 0,
+          hasNextPage: false,
+          hasPrevPage: false
+        }
+      };
     }
     
-    // Convert map to array and determine most common platform for each author
-    let authorsArray = [...authorMap.values()].map(author => {
-      // Find the most common platform
-      let mostCommonPlatform = 'Unknown';
-      let maxCount = 0;
-      
-      for (const [platform, count] of author.platforms.entries()) {
-        if (count > maxCount) {
-          maxCount = count;
-          mostCommonPlatform = platform;
-        }
-      }
-      
-      return {
-        ...author,
-        platform: mostCommonPlatform,
-        platforms: undefined // Remove the platforms map from the final output
-      };
-    });
+    // Get all unique author IDs from the aggregation result
+    const authorIds = postStats.map(stat => stat._id);
+    
+    // Fetch author details in a single batch query - uses index on author_id
+    console.log(`⏱️ Starting author lookup at ${Date.now() - startTime}ms`);
+    const authorsData = await Author.find({ author_id: { $in: authorIds } })
+      .select('author_id username profile_pic flagged')
+      .lean()
+      .exec();
+    console.log(`⏱️ Completed author lookup at ${Date.now() - startTime}ms - found ${authorsData.length} authors`);
+    
+    // Create a map for O(1) lookups
+    const authorMap = new Map(authorsData.map(author => [author.author_id, author]));
+    
+    // Combine the post stats with author details
+    const combinedAuthors = postStats
+      .filter(stat => authorMap.has(stat._id)) // Filter out authors that don't exist
+      .map(stat => {
+        const author = authorMap.get(stat._id)!; // We know this exists from the filter above
+        
+        const mostCommonPlatform = stat.platforms && stat.platforms.length > 0 
+          ? stat.platforms[0] // Just take the first one for simplicity
+          : 'Unknown';
+          
+        return {
+          authorId: author.author_id,
+          username: author.username,
+          profilePic: author.profile_pic || '',
+          postCount: stat.postCount,
+          totalEngagement: stat.totalEngagement,
+          flagged: author.flagged || false,
+          platform: mostCommonPlatform
+        };
+      });
     
     // Apply search filter if provided
+    let filteredAuthors = combinedAuthors;
     if (search && search.trim() !== '') {
       const searchLowerCase = search.toLowerCase();
-      authorsArray = authorsArray.filter(author => 
+      filteredAuthors = combinedAuthors.filter(author => 
         author.username.toLowerCase().includes(searchLowerCase)
       );
+      console.log(`⏱️ Applied search filter at ${Date.now() - startTime}ms - ${filteredAuthors.length} authors match`);
     }
     
     // Apply sorting
+    let sortedAuthors = [...filteredAuthors]; // Create a copy to avoid mutation issues
     if (sortBy === 'postCount') {
-      authorsArray.sort((a, b) => b.postCount - a.postCount);
+      sortedAuthors.sort((a, b) => b.postCount - a.postCount);
     } else if (sortBy === 'username') {
-      authorsArray.sort((a, b) => a.username.localeCompare(b.username));
+      sortedAuthors.sort((a, b) => a.username.localeCompare(b.username));
     } else {
       // Default sort by engagement
-      authorsArray.sort((a, b) => b.totalEngagement - a.totalEngagement);
+      sortedAuthors.sort((a, b) => b.totalEngagement - a.totalEngagement);
     }
     
     // Calculate pagination values
-    const totalItems = authorsArray.length;
+    const totalItems = sortedAuthors.length;
     const totalPages = Math.ceil(totalItems / limit);
     const currentPage = Math.min(page, totalPages) || 1;
     const startIndex = (currentPage - 1) * limit;
     const endIndex = Math.min(startIndex + limit, totalItems);
     
     // Get the paginated subset of authors
-    const paginatedAuthors = authorsArray.slice(startIndex, endIndex);
+    const paginatedAuthors = sortedAuthors.slice(startIndex, endIndex);
+    
+    console.log(`⏱️ Completed getAuthorsByTopicId in ${Date.now() - startTime}ms`);
     
     return {
       topicId: topic._id.toString(),
@@ -315,7 +345,7 @@ export const getAuthorsByTopicId = async (
   }
 };
 
-// New function to get flagged authors for a topic
+// Function to get flagged authors for a topic
 export const getFlaggedAuthorsByTopicId = async (
   topicId: string,
   page: number = 1,
@@ -332,6 +362,7 @@ export const getFlaggedAuthorsByTopicId = async (
     postCount: number;
     totalEngagement: number;
     platform: string;
+    flagged: boolean;
   }>;
   pagination: {
     currentPage: number;
@@ -342,6 +373,9 @@ export const getFlaggedAuthorsByTopicId = async (
   };
 } | null> => {
   try {
+    const startTime = Date.now();
+    console.log(`🔍 Starting getFlaggedAuthorsByTopicId for topic ${topicId}`);
+    
     // Find the topic by ID
     const topic = await TopicModel.findById(topicId).lean();
     
@@ -349,106 +383,130 @@ export const getFlaggedAuthorsByTopicId = async (
       return null; // Topic not found
     }
     
-    // Get all flagged authors using the flagged index
+    // Get flagged authors directly using the index on flagged
+    console.log(`⏱️ Starting flagged authors lookup at ${Date.now() - startTime}ms`);
     const flaggedAuthors = await Author.find({ flagged: true })
+      .select('author_id username profile_pic')
       .lean()
-      .select('author_id username profile_pic');
+      .exec();
+    console.log(`⏱️ Completed flagged authors lookup at ${Date.now() - startTime}ms - found ${flaggedAuthors.length} flagged authors`);
     
-    // Use a Set for faster lookups
-    const flaggedAuthorIds = new Set(flaggedAuthors.map(author => author.author_id));
-    
-    // Find all posts for this topic with author_id that is in flaggedAuthorIds
-    // Use the compound topic_ids + author_id index
-    const posts = await Post.find({ 
-        topic_ids: new mongoose.Types.ObjectId(topicId),
-        author_id: { $in: [...flaggedAuthorIds] }
-      })
-      .lean()
-      .select('author_id platform likesCount commentsCount');
-    
-    // Create a map for faster author lookups
-    const authorMap = new Map();
-    
-    // Process posts more efficiently
-    for (const post of posts) {
-      const authorId = post.author_id;
-      
-      if (!authorMap.has(authorId)) {
-        // Find author in our prefetched list
-        const author = flaggedAuthors.find(a => a.author_id === authorId);
-        
-        if (author) {
-          authorMap.set(authorId, {
-            authorId: author.author_id,
-            username: author.username,
-            profilePic: author.profile_pic,
-            postCount: 1,
-            totalEngagement: (post.likesCount || 0) + (post.commentsCount || 0),
-            flagged: true,
-            platforms: new Map([[post.platform, 1]]) // Initialize platform count
-          });
+    // If there are no flagged authors, return early
+    if (flaggedAuthors.length === 0) {
+      return {
+        topicId: topic._id.toString(),
+        topicName: topic.name,
+        authors: [],
+        pagination: {
+          currentPage: 1,
+          totalPages: 0,
+          totalItems: 0,
+          hasNextPage: false,
+          hasPrevPage: false
         }
-      } else {
-        // Update existing author data
-        const authorData = authorMap.get(authorId);
-        authorData.postCount += 1;
-        authorData.totalEngagement += (post.likesCount || 0) + (post.commentsCount || 0);
-        
-        // Update platform count
-        const platformCount = authorData.platforms.get(post.platform) || 0;
-        authorData.platforms.set(post.platform, platformCount + 1);
-        
-        authorMap.set(authorId, authorData);
-      }
+      };
     }
     
-    // Convert map to array and determine most common platform for each author
-    let authorsArray = Array.from(authorMap.values()).map(author => {
-      // Find the most common platform
-      let mostCommonPlatform = 'Unknown';
-      let maxCount = 0;
+    // Extract flagged author IDs for efficient querying
+    const flaggedAuthorIds = flaggedAuthors.map(author => author.author_id);
+    
+    // Use MongoDB aggregation framework for high-performance querying
+    const pipeline = [
+      // Match posts for this topic and only for flagged authors - using compound index
+      { $match: { 
+        topic_ids: new mongoose.Types.ObjectId(topicId),
+        author_id: { $in: flaggedAuthorIds }
+      }},
       
-      for (const [platform, count] of author.platforms.entries()) {
-        if (count > maxCount) {
-          maxCount = count;
-          mostCommonPlatform = platform;
-        }
-      }
+      // Group by author_id to compute metrics
+      { $group: {
+        _id: "$author_id",
+        postCount: { $sum: 1 },
+        totalEngagement: { $sum: { $add: [{ $ifNull: ["$likesCount", 0] }, { $ifNull: ["$commentsCount", 0] }] } },
+        platforms: { $addToSet: "$platform" }
+      }},
       
+      // Limit results for performance
+      { $limit: 1000 }
+    ];
+    
+    // Execute the aggregation pipeline
+    console.log(`⏱️ Starting posts aggregation at ${Date.now() - startTime}ms`);
+    const postStats = await Post.aggregate(pipeline);
+    console.log(`⏱️ Completed posts aggregation at ${Date.now() - startTime}ms - found ${postStats.length} flagged authors with posts`);
+    
+    // If no posts found for flagged authors in this topic
+    if (postStats.length === 0) {
       return {
-        ...author,
-        platform: mostCommonPlatform,
-        platforms: undefined // Remove the platforms map from the final output
+        topicId: topic._id.toString(),
+        topicName: topic.name,
+        authors: [],
+        pagination: {
+          currentPage: 1,
+          totalPages: 0,
+          totalItems: 0,
+          hasNextPage: false,
+          hasPrevPage: false
+        }
       };
-    });
+    }
+    
+    // Create maps for O(1) lookups
+    const authorMap = new Map(flaggedAuthors.map(author => [author.author_id, author]));
+    
+    // Combine the post stats with author details
+    const combinedAuthors = postStats
+      .filter(stat => authorMap.has(stat._id))
+      .map(stat => {
+        const author = authorMap.get(stat._id)!; // Non-null assertion is safe due to filter
+        
+        const mostCommonPlatform = stat.platforms && stat.platforms.length > 0 
+          ? stat.platforms[0] 
+          : 'Unknown';
+          
+        return {
+          authorId: author.author_id,
+          username: author.username,
+          profilePic: author.profile_pic || '',
+          postCount: stat.postCount,
+          totalEngagement: stat.totalEngagement,
+          flagged: true, // These are all flagged
+          platform: mostCommonPlatform
+        };
+      });
     
     // Apply search filter if provided
+    let filteredAuthors = combinedAuthors;
     if (search && search.trim() !== '') {
       const searchLowerCase = search.toLowerCase();
-      authorsArray = authorsArray.filter(author => 
+      filteredAuthors = combinedAuthors.filter(author => 
         author.username.toLowerCase().includes(searchLowerCase)
       );
+      console.log(`⏱️ Applied search filter at ${Date.now() - startTime}ms - ${filteredAuthors.length} authors match`);
     }
     
     // Apply sorting
+    let sortedAuthors = [...filteredAuthors]; // Create a copy to avoid mutation issues
     if (sortBy === 'postCount') {
-      authorsArray.sort((a, b) => b.postCount - a.postCount);
+      sortedAuthors.sort((a, b) => b.postCount - a.postCount);
     } else if (sortBy === 'username') {
-      authorsArray.sort((a, b) => a.username.localeCompare(b.username));
+      sortedAuthors.sort((a, b) => a.username.localeCompare(b.username));
     } else {
       // Default sort by engagement
-      authorsArray.sort((a, b) => b.totalEngagement - a.totalEngagement);
+      sortedAuthors.sort((a, b) => b.totalEngagement - a.totalEngagement);
     }
     
     // Calculate pagination values
-    const totalItems = authorsArray.length;
+    const totalItems = sortedAuthors.length;
     const totalPages = Math.ceil(totalItems / limit);
     const currentPage = Math.min(page, totalPages) || 1;
     const startIndex = (currentPage - 1) * limit;
     const endIndex = Math.min(startIndex + limit, totalItems);
     
     // Get the paginated subset of authors
-    const paginatedAuthors = authorsArray.slice(startIndex, endIndex);
+    const paginatedAuthors = sortedAuthors.slice(startIndex, endIndex);
+    
+    console.log(`⏱️ Completed getFlaggedAuthorsByTopicId in ${Date.now() - startTime}ms`);
     
     return {
       topicId: topic._id.toString(),

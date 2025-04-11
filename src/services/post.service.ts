@@ -1409,100 +1409,132 @@ export const getAllPosts = async (
   userId: string
 ) => {
   try {
-    // Build optimized base query
+    const startTime = Date.now();
+    console.log(`🔍 Starting getAllPosts with skip=${skip}, limit=${limit}`);
+    
+    // Build optimized query for better index usage
     const baseQuery: any = { dismissed: { $ne: true } };
-
-    // Process keyword with Boolean search syntax
-    if (filters.keyword) {
-      const searchQuery = processBooleanSearch(filters.keyword);
-
-      if (searchQuery) {
-        Object.assign(baseQuery, searchQuery);
-      } else {
-        // Use text index for better performance if available
-        if (filters.keyword.includes(" ")) {
-          // Multi-word searches benefit more from text index
-          baseQuery.$text = { $search: filters.keyword };
-        } else {
-          // Single-word searches can use regex for more flexibility
-          const searchTerm = escapeRegExp(filters.keyword);
-          baseQuery.$or = [
-            { platform: { $regex: searchTerm, $options: "i" } },
-            { username: { $regex: searchTerm, $options: "i" } },
-            { caption: { $regex: searchTerm, $options: "i" } },
-          ];
-        }
-      }
-    }
-
+    
+    // Track which indexes we're likely using for monitoring
+    const usedIndexes = ['dismissed_1_created_at_-1']; // Base index we're always using
+    
+    // Apply platform filter - leverages compound index { dismissed: 1, platform: 1 }
     if (filters.platforms && filters.platforms.length > 0) {
       baseQuery.platform = { $in: filters.platforms };
+      usedIndexes.push('dismissed_1_platform_1');
     }
-
+    
+    // Apply date range filter - works with our date-based indexes
     if (filters.dateRange?.start && filters.dateRange?.end) {
       const startDate = new Date(filters.dateRange.start);
       const endDate = new Date(filters.dateRange.end);
       endDate.setHours(23, 59, 59, 999);
-
       baseQuery.created_at = { $gte: startDate, $lte: endDate };
     }
-
+    
+    // Apply flag status filter - uses flag index
     if (filters.flagStatus) {
       baseQuery.flagged = filters.flagStatus === "flagged";
       baseQuery.flaggedBy = { $in: [userId] };
+      usedIndexes.push('flagged_1_flaggedBy_1');
     }
-
-    console.log("Query:", JSON.stringify(baseQuery, null, 2));
-
-    // Use promise.all for parallel execution of count queries
-    const [
-      totalPosts,
-      totalFlaggedPosts,
-      totalAllPosts,
-      totalAllFlagged
-    ] = await Promise.all([
-      Post.countDocuments(baseQuery).lean().exec(),
-      Post.countDocuments({
-        ...baseQuery,
-        flagged: true
-      }).lean().exec(),
-      Post.countDocuments({ dismissed: { $ne: true } }).lean().exec(),
-      Post.countDocuments({
-        dismissed: { $ne: true },
-        flagged: true
-      }).lean().exec()
-    ]);
-
-    // Determine optimal sort index to use
-    let sortOptions = {};
+    
+    // Process keyword search with Boolean search logic
+    if (filters.keyword) {
+      // Try to use text index for better performance
+      const searchQuery = processBooleanSearch(filters.keyword);
+      
+      if (searchQuery) {
+        // Boolean search query handled by custom parser
+        Object.assign(baseQuery, searchQuery);
+      } else if (filters.keyword.includes(" ") && filters.keyword.length > 5) {
+        // Use full text index for multi-word searches
+        baseQuery.$text = { $search: filters.keyword };
+        usedIndexes.push('caption_text_username_text');
+      } else {
+        // For simple single-word queries, use optimized regex
+        // This approach is faster than $text for simple queries
+        const searchTerm = escapeRegExp(filters.keyword);
+        baseQuery.$or = [
+          { platform: { $regex: searchTerm, $options: "i" } },
+          { username: { $regex: searchTerm, $options: "i" } },
+          { caption: { $regex: searchTerm, $options: "i" } },
+        ];
+      }
+    }
+    
+    console.log(`⏱️ Query prepared in ${Date.now() - startTime}ms using likely indexes: ${usedIndexes.join(', ')}`);
+    console.log(`Query:`, JSON.stringify(baseQuery, null, 2));
+    
+    // Determine optimal sort options based on filter criteria
+    let sortOptions: any = {};
+    
     if (filters.sortBy === "engagement") {
-      sortOptions = {
-        likesCount: -1,
-        commentsCount: -1
-      };
+      sortOptions = { likesCount: -1, commentsCount: -1 };
     } else if (filters.sortBy === "oldest") {
       sortOptions = { created_at: 1 };
     } else {
+      // Default to newest first
       sortOptions = { created_at: -1 };
     }
-
-    // Execute main query with lean() for better performance
-    // and select specific fields to reduce memory usage
-    const posts = await Post.find(baseQuery)
-      .sort(sortOptions)
-      .skip(skip)
-      .limit(limit)
-      .lean()
-      .select('platform post_id author_id profile_pic username caption image_url title video_url likesCount commentsCount viewsCount created_at post_url flagged flaggedBy flagTimestamp flaggedStatus topic_ids dismissed dismissTimestamp')
-      .exec();
-
-    return {
+    
+    // Use MongoDB aggregation for better performance with large datasets
+    const countPipeline = [
+      { $match: baseQuery },
+      { $group: {
+          _id: null,
+          totalPosts: { $sum: 1 },
+          flaggedPosts: { $sum: { $cond: [{ $eq: ["$flagged", true] }, 1, 0] } }
+      }}
+    ];
+    
+    // Use separate lightweight query for total counts (not affected by filters except dismissed)
+    const totalCountsPipeline = [
+      { $match: { dismissed: { $ne: true } } },
+      { $group: {
+          _id: null,
+          totalAllPosts: { $sum: 1 },
+          totalAllFlagged: { $sum: { $cond: [{ $eq: ["$flagged", true] }, 1, 0] } }
+      }}
+    ];
+    
+    // Execute main query and count operations in parallel
+    console.log(`⏱️ Starting data fetch at ${Date.now() - startTime}ms`);
+    
+    const [posts, countResults, totalCountResults] = await Promise.all([
+      // Main data query with pagination, lean for performance
+      Post.find(baseQuery)
+        .sort(sortOptions)
+        .skip(skip)
+        .limit(limit)
+        .select('platform post_id author_id profile_pic username caption image_url title video_url likesCount commentsCount viewsCount created_at post_url flagged flaggedBy flagTimestamp flaggedStatus topic_ids')
+        .lean()
+        .exec(),
+      
+      // Count query for filtered posts
+      Post.aggregate(countPipeline).exec(),
+      
+      // Count query for all posts (regardless of filter)
+      Post.aggregate(totalCountsPipeline).exec()
+    ]);
+    
+    console.log(`⏱️ Data fetched in ${Date.now() - startTime}ms, found ${posts.length} posts`);
+    
+    // Extract counts from the aggregation results
+    const countData = countResults[0] || { totalPosts: 0, flaggedPosts: 0 };
+    const totalCountData = totalCountResults[0] || { totalAllPosts: 0, totalAllFlagged: 0 };
+    
+    // Return the optimized result
+    const result = {
       posts,
-      totalPosts,
-      totalFlaggedPosts,
-      totalAllPosts,
-      totalAllFlagged,
+      totalPosts: countData.totalPosts || 0,
+      totalFlaggedPosts: countData.flaggedPosts || 0,
+      totalAllPosts: totalCountData.totalAllPosts || 0,
+      totalAllFlagged: totalCountData.totalAllFlagged || 0
     };
+    
+    console.log(`⏱️ getAllPosts completed in ${Date.now() - startTime}ms`);
+    return result;
   } catch (error) {
     console.error("❌ Error fetching posts:", error);
     throw error;
