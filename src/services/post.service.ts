@@ -13,6 +13,37 @@ import { getJson } from "serpapi";
 
 const MAX_POSTS = 200;
 
+// Create necessary indexes for post queries
+const createPostIndexes = async () => {
+  try {
+    // Core indexes for frequent queries
+    await Post.collection.createIndex({ dismissed: 1, created_at: -1 }, { background: true });
+    await Post.collection.createIndex({ platform: 1, dismissed: 1 }, { background: true });
+    await Post.collection.createIndex({ flagged: 1, flaggedBy: 1 }, { background: true });
+    await Post.collection.createIndex({ caption: "text", username: "text" }, { background: true });
+    
+    // Compound indexes for common filter combinations
+    await Post.collection.createIndex({ 
+      dismissed: 1, 
+      platform: 1, 
+      created_at: -1 
+    }, { background: true });
+    
+    await Post.collection.createIndex({ 
+      dismissed: 1, 
+      flagged: 1, 
+      created_at: -1 
+    }, { background: true });
+    
+    console.log("✅ All post indexes created successfully");
+  } catch (error) {
+    console.error("❌ Error creating post indexes:", error);
+  }
+};
+
+// Run this once to create all necessary indexes, then comment it out
+// createPostIndexes();
+
 /**
  * Fetch posts from any platform with a url
  * @param url - The url of the post
@@ -1063,7 +1094,7 @@ export const fetchAndStoreRedditPosts = async (
         }
 
         const postUrl = `https://www.reddit.com${postData.permalink}`;
-        const createdAt = new Date(postData.created_utc * 1000); // Convert Unix timestamp to Date
+        const createdAt = new Date(postData.created_utc * 1000);
 
         // Extract image URL if it exists
         let imageUrl = "";
@@ -1378,32 +1409,29 @@ export const getAllPosts = async (
   userId: string
 ) => {
   try {
-    // Build base query for filters
-    const baseQuery: any = {
-      $or: [
-        { dismissed: false },
-        { dismissed: { $exists: false } }, // Include posts where dismissed field doesn't exist
-      ],
-    };
+    // Build optimized base query
+    const baseQuery: any = { dismissed: { $ne: true } };
 
     // Process keyword with Boolean search syntax
     if (filters.keyword) {
-      // If we have a keyword, we'll focus the search on the caption field
-      // using the Boolean search syntax
       const searchQuery = processBooleanSearch(filters.keyword);
 
-      // Apply the search query to the caption field
       if (searchQuery) {
-        // Instead of assigning directly to baseQuery.caption,
-        // we merge the search query with the base query
         Object.assign(baseQuery, searchQuery);
       } else {
-        // Fallback to simple search if Boolean parsing fails
-        baseQuery.$or = [
-          { platform: { $regex: `\\b${escapeRegExp(filters.keyword)}\\b`, $options: "i" } },
-          { username: { $regex: `\\b${escapeRegExp(filters.keyword)}\\b`, $options: "i" } },
-          { caption: { $regex: `\\b${escapeRegExp(filters.keyword)}\\b`, $options: "i" } },
-        ];
+        // Use text index for better performance if available
+        if (filters.keyword.includes(" ")) {
+          // Multi-word searches benefit more from text index
+          baseQuery.$text = { $search: filters.keyword };
+        } else {
+          // Single-word searches can use regex for more flexibility
+          const searchTerm = escapeRegExp(filters.keyword);
+          baseQuery.$or = [
+            { platform: { $regex: searchTerm, $options: "i" } },
+            { username: { $regex: searchTerm, $options: "i" } },
+            { caption: { $regex: searchTerm, $options: "i" } },
+          ];
+        }
       }
     }
 
@@ -1424,41 +1452,49 @@ export const getAllPosts = async (
       baseQuery.flaggedBy = { $in: [userId] };
     }
 
-    console.log("Final query:", JSON.stringify(baseQuery, null, 2));
+    console.log("Query:", JSON.stringify(baseQuery, null, 2));
 
-    // Get total counts first (unaffected by pagination)
-    const totalPosts = await Post.countDocuments(baseQuery);
-    const totalFlaggedPosts = await Post.countDocuments({
-      ...baseQuery,
-      flagged: true,
-    });
+    // Use promise.all for parallel execution of count queries
+    const [
+      totalPosts,
+      totalFlaggedPosts,
+      totalAllPosts,
+      totalAllFlagged
+    ] = await Promise.all([
+      Post.countDocuments(baseQuery).lean().exec(),
+      Post.countDocuments({
+        ...baseQuery,
+        flagged: true
+      }).lean().exec(),
+      Post.countDocuments({ dismissed: { $ne: true } }).lean().exec(),
+      Post.countDocuments({
+        dismissed: { $ne: true },
+        flagged: true
+      }).lean().exec()
+    ]);
 
-    // Get total counts without filters (but still excluding dismissed posts)
-    const totalAllPosts = await Post.countDocuments({
-      $or: [{ dismissed: false }, { dismissed: { $exists: false } }],
-    });
-    const totalAllFlagged = await Post.countDocuments({
-      $or: [{ dismissed: false }, { dismissed: { $exists: false } }],
-      flagged: true,
-    });
-
-    // Then get paginated data
-    let query = Post.find(baseQuery);
-
-    // Apply sorting
+    // Determine optimal sort index to use
+    let sortOptions = {};
     if (filters.sortBy === "engagement") {
-      query = query.sort({
+      sortOptions = {
         likesCount: -1,
-        commentsCount: -1,
-      });
+        commentsCount: -1
+      };
     } else if (filters.sortBy === "oldest") {
-      query = query.sort({ created_at: 1 });
+      sortOptions = { created_at: 1 };
     } else {
-      query = query.sort({ created_at: -1 });
+      sortOptions = { created_at: -1 };
     }
 
-    // Apply pagination to data fetch only
-    const posts = await query.skip(skip).limit(limit).exec();
+    // Execute main query with lean() for better performance
+    // and select specific fields to reduce memory usage
+    const posts = await Post.find(baseQuery)
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(limit)
+      .lean()
+      .select('platform post_id author_id profile_pic username caption image_url title video_url likesCount commentsCount viewsCount created_at post_url flagged flaggedBy flagTimestamp flaggedStatus topic_ids dismissed dismissTimestamp')
+      .exec();
 
     return {
       posts,
