@@ -28,31 +28,87 @@ const fetchPostsForTopic = async (topicName: string, topicId: string): Promise<v
       console.error("Error extracting keywords:", keywordError);
     }
     
+    const errors = [];
+    
     // For Twitter and YouTube, pass the full query
-    await fetchAndStoreTwitterPosts(topicName, topicId);
-    await fetchAndStoreYoutubeVideos(topicName, topicId);
+    try {
+      await fetchAndStoreTwitterPosts(topicName, topicId);
+    } catch (error) {
+      console.error(`❌ Error fetching Twitter posts for topic ${topicName}:`, error);
+      errors.push({ platform: "Twitter", error });
+    }
+    
+    try {
+      await fetchAndStoreYoutubeVideos(topicName, topicId);
+    } catch (error) {
+      console.error(`❌ Error fetching YouTube videos for topic ${topicName}:`, error);
+      errors.push({ platform: "YouTube", error });
+    }
     
     // For platforms that need individual keyword searches
     if (keywords.length > 0) {
       // For Reddit, Instagram and News, search for each keyword separately
       for (const keyword of keywords) {
-        await fetchAndStoreInstagramPosts(keyword, topicId);
-        await fetchAndStoreRedditPosts(keyword, topicId);
-        await fetchAndStoreGoogleNewsPosts(keyword, topicId);
+        try {
+          await fetchAndStoreInstagramPosts(keyword, topicId);
+        } catch (error) {
+          console.error(`❌ Error fetching Instagram posts for keyword '${keyword}' in topic ${topicName}:`, error);
+          errors.push({ platform: "Instagram", keyword, error });
+        }
+        
+        try {
+          await fetchAndStoreRedditPosts(keyword, topicId);
+        } catch (error) {
+          console.error(`❌ Error fetching Reddit posts for keyword '${keyword}' in topic ${topicName}:`, error);
+          errors.push({ platform: "Reddit", keyword, error });
+        }
+        
+        try {
+          await fetchAndStoreGoogleNewsPosts(keyword, topicId);
+        } catch (error) {
+          console.error(`❌ Error fetching Google News posts for keyword '${keyword}' in topic ${topicName}:`, error);
+          errors.push({ platform: "Google News", keyword, error });
+        }
       }
     } else {
-      await fetchAndStoreInstagramPosts(topicName, topicId);
-      await fetchAndStoreRedditPosts(topicName, topicId);
-      await fetchAndStoreGoogleNewsPosts(topicName, topicId);
+      try {
+        await fetchAndStoreInstagramPosts(topicName, topicId);
+      } catch (error) {
+        console.error(`❌ Error fetching Instagram posts for topic ${topicName}:`, error);
+        errors.push({ platform: "Instagram", error });
+      }
+      
+      try {
+        await fetchAndStoreRedditPosts(topicName, topicId);
+      } catch (error) {
+        console.error(`❌ Error fetching Reddit posts for topic ${topicName}:`, error);
+        errors.push({ platform: "Reddit", error });
+      }
+      
+      try {
+        await fetchAndStoreGoogleNewsPosts(topicName, topicId);
+      } catch (error) {
+        console.error(`❌ Error fetching Google News posts for topic ${topicName}:`, error);
+        errors.push({ platform: "Google News", error });
+      }
     }
     
     // After fetching all posts, filter them based on the Boolean query
     // This will delete any posts that don't match the query and their authors
-    await filterPostsByBooleanQuery(topicId, topicName);
+    try {
+      await filterPostsByBooleanQuery(topicId, topicName);
+    } catch (error) {
+      console.error(`❌ Error filtering posts by Boolean query for topic ${topicName}:`, error);
+      errors.push({ process: "Boolean filtering", error });
+    }
     
-    console.log(`✅ Completed scheduled fetch for topic: ${topicName}`);
+    if (errors.length > 0) {
+      console.log(`⚠️ Completed fetch for topic: ${topicName} with ${errors.length} errors`);
+    } else {
+      console.log(`✅ Completed scheduled fetch for topic: ${topicName} successfully`);
+    }
   } catch (error) {
-    console.error(`❌ Error fetching posts for topic ${topicName}:`, error);
+    console.error(`❌ Fatal error in fetchPostsForTopic for ${topicName}:`, error);
     // Continue with other topics even if one fails
   }
 };
