@@ -17,9 +17,13 @@ import {
   dismissPostService,
   fetchAndStoreRedditPosts,
   fetchPostByUrlService,
+  processBooleanSearch,
+  extractKeywordsFromBooleanQuery,
+  filterPostsByBooleanQuery,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
+import Post from "../models/post.model";
 import { convertSearchQueryToHashtag } from "../services/ai.service";
 import { fetchAllTopics } from "../services/cron.service";
 import axios from "axios";
@@ -41,11 +45,9 @@ export const uploadPosts = async (
       return;
     }
     if (!topicData.name || typeof topicData.name !== "string") {
-      res
-        .status(400)
-        .json({
-          error: "Topic name parameter is required and must be a string",
-        });
+      res.status(400).json({
+        error: "Topic name parameter is required and must be a string",
+      });
       return;
     }
 
@@ -56,40 +58,134 @@ export const uploadPosts = async (
       } else {
         topic = await createTopic(topicData, effectiveUserId);
       }
-    } catch (topicError) {}
+    } catch (topicError) {
+      console.error("Error creating or updating topic:", topicError);
+    }
 
-    let hashtag;
+    // Extract keywords from Boolean query for platforms that don't support complex search
+    let keywords: string[] = [];
     try {
-      hashtag = await convertSearchQueryToHashtag(topicData.name);
-    } catch (hashtagError) {}
+      keywords = extractKeywordsFromBooleanQuery(topicData.name);
+      console.log(`🔍 Extracted keywords from Boolean query:`, keywords);
+    } catch (keywordError) {
+      console.error("Error extracting keywords:", keywordError);
+    }
 
     if (topic && topic.active) {
+      const fetchPromises = [];
+      const errors = [];
+
+      // For Twitter and YouTube, pass the full query
       try {
         await fetchAndStoreTwitterPosts(
           topicData.name,
           topic._id as unknown as string
         );
-        await fetchAndStoreGoogleNewsPosts(
-          topicData.name,
-          topic._id as unknown as string
-        );
+      } catch (error) {
+        console.error("Error fetching Twitter posts:", error);
+        errors.push({ platform: "Twitter", error });
+      }
 
-        if (hashtag) {
-          await fetchAndStoreInstagramPosts(
-            hashtag,
-            topic._id as unknown as string
-          );
-        }
-        await fetchAndStoreRedditPosts(
-          topicData.name,
-          topic._id as unknown as string
-        );
+      try {
         await fetchAndStoreYoutubeVideos(
           topicData.name,
           topic._id as unknown as string
         );
-      } catch (fetchError) {
-        console.error("Error fetching posts:", fetchError);
+      } catch (error) {
+        console.error("Error fetching YouTube videos:", error);
+        errors.push({ platform: "YouTube", error });
+      }
+
+      // For Reddit and News, search for each keyword separately
+      if (keywords.length > 0) {
+        for (const keyword of keywords) {
+          try {
+            await fetchAndStoreInstagramPosts(
+              keyword,
+              topic._id as unknown as string
+            );
+          } catch (error) {
+            console.error(`Error fetching Instagram posts for keyword '${keyword}':`, error);
+            errors.push({ platform: "Instagram", keyword, error });
+          }
+
+          try {
+            await fetchAndStoreRedditPosts(
+              keyword,
+              topic._id as unknown as string
+            );
+          } catch (error) {
+            console.error(`Error fetching Reddit posts for keyword '${keyword}':`, error);
+            errors.push({ platform: "Reddit", keyword, error });
+          }
+
+          try {
+            await fetchAndStoreGoogleNewsPosts(
+              keyword,
+              topic._id as unknown as string
+            );
+          } catch (error) {
+            console.error(`Error fetching Google News posts for keyword '${keyword}':`, error);
+            errors.push({ platform: "Google News", keyword, error });
+          }
+        }
+      } else {
+        // Fallback to original query if keyword extraction failed
+        try {
+          await fetchAndStoreInstagramPosts(
+            topicData.name,
+            topic._id as unknown as string
+          );
+        } catch (error) {
+          console.error("Error fetching Instagram posts:", error);
+          errors.push({ platform: "Instagram", error });
+        }
+
+        try {
+          await fetchAndStoreRedditPosts(
+            topicData.name,
+            topic._id as unknown as string
+          );
+        } catch (error) {
+          console.error("Error fetching Reddit posts:", error);
+          errors.push({ platform: "Reddit", error });
+        }
+
+        try {
+          await fetchAndStoreGoogleNewsPosts(
+            topicData.name,
+            topic._id as unknown as string
+          );
+        } catch (error) {
+          console.error("Error fetching Google News posts:", error);
+          errors.push({ platform: "Google News", error });
+        }
+      }
+
+      // After fetching all posts, filter them based on the Boolean query
+      // This will delete any posts that don't match the query
+      try {
+        await filterPostsByBooleanQuery(
+          topic._id as unknown as string,
+          topicData.name
+        );
+      } catch (filterError) {
+        console.error("Error filtering posts by Boolean query:", filterError);
+        errors.push({ process: "Boolean filtering", error: filterError });
+      }
+
+      // Return response with any fetch errors
+      if (errors.length > 0) {
+        res.status(207).json({
+          message: "Process completed with some errors",
+          successful: true,
+          errors: errors.map(e => ({
+            platform: e.platform || e.process,
+            keyword: e.keyword,
+            message: e.error instanceof Error ? e.error.message : String(e.error)
+          }))
+        });
+        return;
       }
     }
 
@@ -551,6 +647,69 @@ export const testRedditAuth = async (
     res.status(500).json({
       error: "Internal server error",
       details: error.response?.data || error.message,
+    });
+  }
+};
+
+// Add a debug controller to test Boolean queries directly
+export const testBooleanQuery = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { query, topicId } = req.body;
+    
+    if (!query || typeof query !== 'string') {
+      res.status(400).json({ error: "Query parameter is required" });
+      return;
+    }
+    
+    // Parse the Boolean query
+    const searchQuery = processBooleanSearch(query);
+    console.log("🔍 Parsed query:", JSON.stringify(searchQuery, null, 2));
+    
+    // Build the MongoDB query
+    const mongoQuery: any = { ...searchQuery };
+    if (topicId && typeof topicId === 'string') {
+      mongoQuery.topic_ids = topicId;
+    }
+    
+    // Test the query
+    const matchingPosts = await Post.find(mongoQuery)
+      .select('_id caption title post_url')
+      .limit(10)
+      .lean();
+    
+    // Count total matches
+    const totalCount = await Post.countDocuments(mongoQuery);
+    
+    // Run a simple text search for comparison
+    const simpleQuery = { caption: { $regex: query, $options: "i" } };
+    const simpleMatches = await Post.find(topicId ? 
+      { ...simpleQuery, topic_ids: topicId } : simpleQuery)
+      .select('_id caption title')
+      .limit(5)
+      .lean();
+    
+    const simpleCount = await Post.countDocuments(topicId ? 
+      { ...simpleQuery, topic_ids: topicId } : simpleQuery);
+    
+    res.status(200).json({
+      message: "Query test results",
+      parsed_query: searchQuery,
+      matching_posts: matchingPosts,
+      total_matches: totalCount,
+      simple_comparison: {
+        query: simpleQuery,
+        matches: simpleMatches,
+        count: simpleCount
+      }
+    });
+  } catch (error) {
+    console.error("Error testing boolean query:", error);
+    res.status(500).json({ 
+      error: "Internal server error", 
+      details: error instanceof Error ? error.message : String(error) 
     });
   }
 };

@@ -17,8 +17,8 @@ export interface Topic extends Document {
 const topicSchema: Schema = new Schema(
   {
     name: { type: String, required: true },
-    description: { type: String, required: true },
-    tags: { type: [String], required: true },
+    description: { type: String, required: false },
+    tags: { type: [String], required: false },
     active: { type: Boolean, default: true },
     alertThreshold: { type: Number, default: 75 },
     sentiment: {

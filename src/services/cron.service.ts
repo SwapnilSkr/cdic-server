@@ -5,9 +5,10 @@ import {
   fetchAndStoreTwitterPosts, 
   fetchAndStoreYoutubeVideos, 
   fetchAndStoreGoogleNewsPosts, 
-  fetchAndStoreRedditPosts
+  fetchAndStoreRedditPosts,
+  extractKeywordsFromBooleanQuery,
+  filterPostsByBooleanQuery
 } from './post.service';
-import { convertSearchQueryToHashtag } from './ai.service';
 
 /**
  * Fetches posts for a single topic using all available platforms
@@ -18,21 +19,37 @@ const fetchPostsForTopic = async (topicName: string, topicId: string): Promise<v
   try {
     console.log(`🔄 Starting scheduled fetch for topic: ${topicName}`);
     
-    // Convert topic name to Instagram hashtag if needed
-    const hashtag = await convertSearchQueryToHashtag(topicName);
-    
-    // Fetch from all platforms in sequence
-    await fetchAndStoreTwitterPosts(topicName, topicId);
-    await fetchAndStoreGoogleNewsPosts(topicName, topicId);
-    
-    // Only fetch Instagram if we have a valid hashtag
-    if (hashtag) {
-      await fetchAndStoreInstagramPosts(hashtag, topicId);
+    // Extract keywords from Boolean query for platforms that don't support complex search
+    let keywords: string[] = [];
+    try {
+      keywords = extractKeywordsFromBooleanQuery(topicName);
+      console.log(`🔍 Extracted keywords from Boolean query:`, keywords);
+    } catch (keywordError) {
+      console.error("Error extracting keywords:", keywordError);
     }
-
-    await fetchAndStoreRedditPosts(topicName, topicId);
     
+    // For Twitter and YouTube, pass the full query
+    await fetchAndStoreTwitterPosts(topicName, topicId);
     await fetchAndStoreYoutubeVideos(topicName, topicId);
+    
+    // For platforms that need individual keyword searches
+    if (keywords.length > 0) {
+      // For Reddit, Instagram and News, search for each keyword separately
+      for (const keyword of keywords) {
+        await fetchAndStoreInstagramPosts(keyword, topicId);
+        await fetchAndStoreRedditPosts(keyword, topicId);
+        await fetchAndStoreGoogleNewsPosts(keyword, topicId);
+      }
+    } else {
+      await fetchAndStoreInstagramPosts(topicName, topicId);
+      await fetchAndStoreRedditPosts(topicName, topicId);
+      await fetchAndStoreGoogleNewsPosts(topicName, topicId);
+    }
+    
+    // After fetching all posts, filter them based on the Boolean query
+    // This will delete any posts that don't match the query and their authors
+    await filterPostsByBooleanQuery(topicId, topicName);
+    
     console.log(`✅ Completed scheduled fetch for topic: ${topicName}`);
   } catch (error) {
     console.error(`❌ Error fetching posts for topic ${topicName}:`, error);

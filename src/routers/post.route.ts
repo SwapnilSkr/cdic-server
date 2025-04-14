@@ -15,6 +15,7 @@ import {
   triggerFetchAllTopics,
   testRedditAuth,
   fetchPostByUrl,
+  testBooleanQuery,
 } from "../controllers/post.controller";
 import { authenticateToken } from "../middlewares/auth.middleware";
 
@@ -33,6 +34,7 @@ router.put("/rename-platform", renamePlatformController);
 router.post("/fetch-all-topics", authenticateToken, triggerFetchAllTopics);
 router.post("/test-reddit", testRedditAuth);
 router.post("/dismiss/:postId", authenticateToken, dismissPost);
+router.get("/test-query", testBooleanQuery);
 router.put("/:postId/status", authenticateToken, updatePostStatus);
 router.get("/:postId", authenticateToken, getPostDetails);
 

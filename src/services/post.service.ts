@@ -86,7 +86,8 @@ export const fetchAndStoreInstagramPosts = async (
 
   try {
     while (totalPostsStored < MAX_POSTS) {
-      let url = `${process.env.HIKER_API_URL_V2}/hashtag/medias/recent?name=${keyword}`;
+      // Changed endpoint from hashtag/medias/recent to search/topsearch
+      let url = `${process.env.HIKER_API_URL_V2}/search/topsearch?query=${keyword}`;
       if (nextPageId) {
         url += `&page_id=${nextPageId}`;
       }
@@ -103,11 +104,12 @@ export const fetchAndStoreInstagramPosts = async (
       const data = response.data;
 
       console.log("📊 Response Data Structure:", {
-        hasResponse: !!data.response,
-        sectionsCount: data.response?.sections?.length || 0,
+        hasMediaGrid: !!data.media_grid,
+        sectionsCount: data.media_grid?.sections?.length || 0,
+        rankToken: data.rank_token || null,
       });
 
-      if (!data.response || !data.response.sections) {
+      if (!data.media_grid || !data.media_grid.sections) {
         console.error("⚠️ Invalid API response format");
         break;
       }
@@ -115,80 +117,158 @@ export const fetchAndStoreInstagramPosts = async (
       const postsData: IPost[] = [];
       let foundPosts = false;
 
-      for (const section of data.response.sections) {
+      // Process each section from the media_grid
+      for (const section of data.media_grid.sections) {
         console.log("📑 Section Structure:", {
           layoutType: section.layout_type,
-          hasClips: !!section.layout_content?.one_by_two_item?.clips?.items,
-          hasMedias: !!section.layout_content?.medias,
+          feedType: section.feed_type || null,
+          hasOneByTwoItem: !!section.layout_content?.one_by_two_item,
         });
 
-        // Extract all available media content from multiple sources
-        const clipsItems =
-          section.layout_content?.one_by_two_item?.clips?.items || [];
-        const mediaItems = section.layout_content?.medias || [];
-        const allMedias = [...clipsItems, ...mediaItems];
+        // Check for clips items in the one_by_two_item
+        if (section.layout_content?.one_by_two_item?.clips?.items) {
+          const clipsItems = section.layout_content.one_by_two_item.clips.items;
+          console.log(`🔍 Found ${clipsItems.length} clips items`);
+          
+          for (const item of clipsItems) {
+            if (totalPostsStored >= MAX_POSTS) break;
+            
+            const media = item.media || {};
+            const postId = media.pk || media.id;
+            
+            if (!postId) {
+              console.log("⚠️ Skipping post due to missing post ID");
+              continue;
+            }
 
-        console.log(`🔍 Found ${allMedias.length} total media items`);
+            // Check if post already exists
+            const existingPost = await Post.findOne({ post_id: postId.toString() });
+            if (existingPost) {
+              console.log(`⚠️ Skipping post ${postId} as it already exists.`);
+              continue;
+            }
 
-        for (const item of allMedias) {
-          if (totalPostsStored >= MAX_POSTS) break;
+            const user = media.user || {};
+            if (!user.pk) {
+              console.log("⚠️ Skipping post due to missing user data");
+              continue;
+            }
 
-          const media = item.media || {};
-          const postId = media.id;
+            // Create or fetch the author
+            const author = await createInstagramAuthor(user.pk);
+            if (!author) {
+              console.log("⚠️ Skipping post due to author creation failure");
+              continue;
+            }
 
-          // Check if post already exists
-          const existingPost = await Post.findOne({ post_id: postId });
-          if (existingPost) {
-            console.log(`⚠️ Skipping post ${postId} as it already exists.`);
-            continue;
+            foundPosts = true;
+
+            const postTimestamp = media.taken_at
+              ? new Date(media.taken_at * 1000)
+              : new Date();
+
+            const postUrl = `https://www.instagram.com/p/${media.code}/`;
+            const imageUrl = media.image_versions2?.candidates?.[0]?.url || "";
+            const videoUrl = media.video_versions?.[0]?.url || "";
+            const likesCount = media.like_count || 0;
+            const commentsCount = media.comment_count || 0;
+            const viewsCount = media.play_count || media.view_count || media.ig_play_count || 0;
+            const captionText = media.caption?.text || "";
+
+            postsData.push(
+              new Post({
+                platform: "Instagram",
+                post_id: postId.toString(),
+                author_id: author.author_id,
+                profile_pic: user.profile_pic_url || "",
+                username: user.username || "",
+                caption: captionText,
+                image_url: imageUrl,
+                video_url: videoUrl,
+                likesCount,
+                commentsCount,
+                viewsCount,
+                created_at: postTimestamp,
+                post_url: postUrl,
+                topic_ids: [topicId],
+              })
+            );
           }
+        }
 
-          const user = media.user || {};
-          const caption = media.caption || {};
+        // Check for fill_items in the section
+        if (section.fill_items && Array.isArray(section.fill_items)) {
+          console.log(`🔍 Found ${section.fill_items.length} fill items`);
+          
+          for (const item of section.fill_items) {
+            if (totalPostsStored >= MAX_POSTS) break;
+            
+            const media = item.media || {};
+            const postId = media.pk || media.id;
+            
+            if (!postId) {
+              console.log("⚠️ Skipping post due to missing post ID");
+              continue;
+            }
 
-          // Create or fetch the author
-          const author = await createInstagramAuthor(user.pk);
-          if (!author) {
-            console.log("⚠️ Skipping post due to author creation failure");
-            continue;
+            // Check if post already exists
+            const existingPost = await Post.findOne({ post_id: postId.toString() });
+            if (existingPost) {
+              console.log(`⚠️ Skipping post ${postId} as it already exists.`);
+              continue;
+            }
+
+            const user = media.user || {};
+            if (!user.pk) {
+              console.log("⚠️ Skipping post due to missing user data");
+              continue;
+            }
+
+            // Create or fetch the author
+            const author = await createInstagramAuthor(user.pk);
+            if (!author) {
+              console.log("⚠️ Skipping post due to author creation failure");
+              continue;
+            }
+
+            foundPosts = true;
+
+            const postTimestamp = media.taken_at
+              ? new Date(media.taken_at * 1000)
+              : new Date();
+
+            const postUrl = `https://www.instagram.com/p/${media.code}/`;
+            const imageUrl = media.image_versions2?.candidates?.[0]?.url || "";
+            const videoUrl = media.video_versions?.[0]?.url || "";
+            const likesCount = media.like_count || 0;
+            const commentsCount = media.comment_count || 0;
+            const viewsCount = media.play_count || media.view_count || media.ig_play_count || 0;
+            const captionText = media.caption?.text || "";
+
+            postsData.push(
+              new Post({
+                platform: "Instagram",
+                post_id: postId.toString(),
+                author_id: author.author_id,
+                profile_pic: user.profile_pic_url || "",
+                username: user.username || "",
+                caption: captionText,
+                image_url: imageUrl,
+                video_url: videoUrl,
+                likesCount,
+                commentsCount,
+                viewsCount,
+                created_at: postTimestamp,
+                post_url: postUrl,
+                topic_ids: [topicId],
+              })
+            );
           }
-
-          foundPosts = true;
-
-          const postTimestamp = media.taken_at
-            ? new Date(media.taken_at * 1000)
-            : new Date();
-
-          const postUrl = `https://www.instagram.com/p/${media.code}/`;
-          const imageUrl = media.image_versions2?.candidates?.[0]?.url || "";
-          const videoUrl = media.video_versions?.[0]?.url || "";
-          const likesCount = media.like_count || 0;
-          const commentsCount = media.comment_count || 0;
-          const viewsCount = media.ig_play_count || media.play_count || 0;
-
-          postsData.push(
-            new Post({
-              platform: "Instagram",
-              post_id: postId,
-              author_id: author.author_id,
-              profile_pic: user.profile_pic_url || "",
-              username: user.username || "",
-              caption: caption.text || "",
-              image_url: imageUrl || "",
-              video_url: videoUrl || "",
-              likesCount,
-              commentsCount,
-              viewsCount, // Store views count
-              created_at: postTimestamp,
-              post_url: postUrl,
-              topic_ids: [topicId],
-            })
-          );
         }
       }
 
-      // Extract next page ID
-      nextPageId = data.response?.next_page_id || data.next_page_id || null;
+      // Extract next page ID if available in the response
+      nextPageId = data.rank_token || null;
       console.log("📄 Next page ID:", nextPageId);
 
       if (postsData.length > 0) {
@@ -1547,8 +1627,15 @@ export const getAllPosts = async (
  * @param query - The Boolean query string to process
  * @returns MongoDB query object or null if parsing fails
  */
-function processBooleanSearch(query: string): any {
+export function processBooleanSearch(query: string): any {
   try {
+    console.log(`🔍 Raw query for parsing: "${query}"`);
+    
+    // Handle empty query
+    if (!query || query.trim() === '') {
+      return {};
+    }
+    
     // Track the current position in parsing
     let position = 0;
 
@@ -1671,7 +1758,7 @@ function processBooleanSearch(query: string): any {
         }
       }
 
-      // Handle quoted phrases
+      // Handle double-quoted phrases
       if (query[position] === '"') {
         position++; // Skip opening quote
         let phrase = "";
@@ -1683,94 +1770,65 @@ function processBooleanSearch(query: string): any {
 
         if (position < query.length) {
           position++; // Skip closing quote
-          // Return a proper regex query object with word boundaries for each word
-          const words = phrase.split(/\s+/);
-          const wordBoundaryPhrase = words.map(w => `\\b${escapeRegExp(w)}\\b`).join('\\s+');
-          return { caption: { $regex: wordBoundaryPhrase, $options: "i" } };
+          console.log(`🔍 Parsed double-quoted phrase: "${phrase}"`);
+          return { caption: { $regex: escapeRegExp(phrase), $options: "i" } };
         } else {
-          throw new Error("Missing closing quote");
+          throw new Error("Missing closing double quote");
         }
       }
 
-      // Handle NEAR operator
-      const nearRegex = /^(\w+)\s+NEAR\/(\d+)\s+(\w+)/i;
-      const nearSubstring = query.substring(position);
-      const nearMatch = nearSubstring.match(nearRegex);
+      // Handle single-quoted phrases
+      if (query[position] === "'") {
+        position++; // Skip opening quote
+        let phrase = "";
 
-      if (nearMatch) {
-        const word1 = nearMatch[1];
-        const distance = parseInt(nearMatch[2]);
-        const word2 = nearMatch[3];
+        while (position < query.length && query[position] !== "'") {
+          phrase += query[position];
+          position++;
+        }
 
-        // Skip the matched NEAR expression
-        position += nearMatch[0].length;
-
-        // For NEAR, we create a regex that matches both words within N words of each other
-        // Using word boundaries for whole word matching
-        const pattern = `\\b${escapeRegExp(
-          word1
-        )}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(
-          word2
-        )}\\b|\\b${escapeRegExp(
-          word2
-        )}\\b(?:\\s+\\w+){0,${distance}}\\s+\\b${escapeRegExp(word1)}\\b`;
-        return { caption: { $regex: pattern, $options: "i" } };
+        if (position < query.length) {
+          position++; // Skip closing quote
+          console.log(`🔍 Parsed single-quoted phrase: "${phrase}"`);
+          return { caption: { $regex: escapeRegExp(phrase), $options: "i" } };
+        } else {
+          throw new Error("Missing closing single quote");
+        }
       }
 
-      // Handle wildcards
+      // Handle regular terms (non-quoted, non-operator words)
       let term = "";
-      let hasWildcard = false;
 
       while (
         position < query.length &&
-        !/[\s()"]/.test(query[position]) &&
-        !query.substring(position).match(/^(AND|OR|NOT)\b/i)
+        !/[\s()'"]/g.test(query[position]) && // Stop at space, parentheses, quotes
+        !query.substring(position).match(/^(AND|OR|NOT)\b/i) // Stop at operators
       ) {
-        if (query[position] === "*") {
-          hasWildcard = true;
-        }
         term += query[position];
         position++;
       }
 
       if (!term) return null;
-
-      // Process wildcards
-      if (hasWildcard) {
-        const pattern = escapeRegExp(term).replace(/\\\*/g, ".*");
-        // Add word boundaries for partial wildcards (e.g., "test*" should match "testing" but not "attest")
-        // Only add the start boundary if the wildcard is not at the beginning
-        const startBoundary = term.startsWith("*") ? "" : "\\b";
-        // Only add the end boundary if the wildcard is not at the end
-        const endBoundary = term.endsWith("*") ? "" : "\\b";
-        return { caption: { $regex: `${startBoundary}${pattern}${endBoundary}`, $options: "i" } };
-      }
-
-      // Regular term - add word boundaries for whole word matching
-      return { caption: { $regex: `\\b${escapeRegExp(term)}\\b`, $options: "i" } };
+      
+      console.log(`🔍 Parsed regular term: "${term}"`);
+      return { caption: { $regex: escapeRegExp(term), $options: "i" } };
     }
 
-    // Helper function to escape special regex characters
-    function escapeRegExp(string: string): string {
-      return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }
-
-    // Let's add some debugging to see what's going on
-    console.log("🔍 Original query:", query);
+    console.log("🔍 Parsing query:", query);
     const result = parseExpression();
     console.log("🔍 Parsed query object:", JSON.stringify(result, null, 2));
 
-    // One final check to ensure we have a valid MongoDB query object
+    // Handle null result
     if (result === null) {
-      // Use word boundaries for simple search too
-      return { caption: { $regex: `\\b${escapeRegExp(query)}\\b`, $options: "i" } };
+      console.log("🔍 Query parsing resulted in null, using fallback");
+      return { caption: { $regex: ".*", $options: "i" } }; // Match everything as fallback
     }
 
     return result;
   } catch (error) {
     console.error("❌ Error parsing Boolean search:", error, "Query:", query);
-    // Fallback to simple search on error, also with word boundaries
-    return { caption: { $regex: `\\b${escapeRegExp(query)}\\b`, $options: "i" } };
+    // Just log the error but don't throw, return a default query that matches everything
+    return { caption: { $regex: ".*", $options: "i" } };
   }
 }
 
@@ -2176,3 +2234,248 @@ export const dismissPostService = async (postId: string) => {
     throw error;
   }
 };
+
+// Function to extract keywords from a Boolean query expression
+// Examples:
+// - "Cyclone disaster management" AND "Odisha" → ["Cyclone disaster management", "Odisha"]
+// - ("COVID-19" OR "Coronavirus") AND "Vaccine" → ["COVID-19", "Coronavirus", "Vaccine"]
+// - 'Climate change' AND ("Paris Agreement" OR "COP26") → ["Climate change", "Paris Agreement", "COP26"]
+export const extractKeywordsFromBooleanQuery = (query: string): string[] => {
+  try {
+    console.log("🔍 Extracting keywords from query:", query);
+    
+    // Special case: If we have a simple AND expression, extract both terms exactly
+    if (query.includes(" AND ")) {
+      const parts = query.split(" AND ");
+      const extractedTerms = parts.map(part => {
+        const trimmed = part.trim();
+        // Remove surrounding quotes if present
+        if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || 
+            (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+          return trimmed.substring(1, trimmed.length - 1);
+        }
+        return trimmed;
+      });
+      
+      console.log("🔍 Extracted keywords from AND expression:", extractedTerms);
+      return extractedTerms;
+    }
+    
+    // Extract all phrases enclosed in quotes (both double and single quotes)
+    const keywords: string[] = [];
+    
+    // Match phrases in double quotes
+    const doubleQuoteRegex = /"([^"]+)"/g;
+    let match;
+    
+    while ((match = doubleQuoteRegex.exec(query)) !== null) {
+      // Add the complete phrase as a single keyword
+      keywords.push(match[1]);
+    }
+    
+    // Match phrases in single quotes
+    const singleQuoteRegex = /'([^']+)'/g;
+    
+    while ((match = singleQuoteRegex.exec(query)) !== null) {
+      // Add the complete phrase as a single keyword
+      keywords.push(match[1]);
+    }
+    
+    // If no quoted phrases were found, fall back to using the entire query
+    if (keywords.length === 0) {
+      // Remove boolean operators
+      const cleanQuery = query.replace(/\b(AND|OR|NOT)\b/g, '').trim();
+      
+      // Remove surrounding quotes if they exist
+      const unquotedQuery = cleanQuery.replace(/^['"](.*)['"]$/, '$1');
+      
+      // If there are no operators and no quotes, use the whole thing
+      if (unquotedQuery.length > 0) {
+        keywords.push(unquotedQuery);
+      }
+    }
+    
+    console.log("🔍 Extracted keywords (preserving phrases):", keywords);
+    return keywords;
+  } catch (error) {
+    console.error("❌ Error extracting keywords from Boolean query:", error);
+    return [];
+  }
+};
+
+// Function to filter posts based on Boolean query
+export const filterPostsByBooleanQuery = async (topicId: string, query: string): Promise<void> => {
+  try {
+    console.log(`🔍 Filtering posts for topic ${topicId} using query: ${query}`);
+    
+    // Get all posts associated with this topic
+    const allPosts = await Post.find({ topic_ids: topicId }).select('_id caption title author_id').lean();
+    console.log(`🔍 Found ${allPosts.length} posts to filter`);
+    
+    if (allPosts.length === 0) {
+      console.log("⚠️ No posts to filter");
+      return;
+    }
+    
+    // Debug some post content
+    console.log("🔍 Sample post captions:");
+    for (let i = 0; i < Math.min(5, allPosts.length); i++) {
+      console.log(`Post ${i+1}: "${allPosts[i].caption || allPosts[i].title || '(empty)'}"`);
+    }
+    
+    // Manually test for presence of both terms in an AND expression
+    if (query.includes(" AND ")) {
+      console.log("🔍 AND expression detected - performing strict manual check");
+      const parts = query.split(" AND ");
+      
+      // Extract the terms (removing quotes)
+      const terms = parts.map(part => {
+        const trimmed = part.trim();
+        if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || 
+            (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+          return trimmed.substring(1, trimmed.length - 1).toLowerCase();
+        }
+        return trimmed.toLowerCase();
+      });
+      
+      console.log(`🔍 Checking for all terms: ${JSON.stringify(terms)}`);
+      
+      // Check each post for all required terms
+      const matchingPosts = [];
+      const unmatchingPosts = [];
+      
+      for (const post of allPosts) {
+        const content = (post.caption || post.title || "").toLowerCase();
+        const missingTerms = [];
+        
+        // Check for each term
+        for (const term of terms) {
+          if (!content.includes(term)) {
+            missingTerms.push(term);
+          }
+        }
+        
+        if (missingTerms.length === 0) {
+          // Post contains all required terms
+          matchingPosts.push(post);
+        } else {
+          // Post is missing at least one required term
+          unmatchingPosts.push({
+            id: post._id,
+            author_id: post.author_id,
+            missingTerms,
+            content: content.substring(0, 100) + "..." // Truncate for readability
+          });
+        }
+      }
+      
+      console.log(`🔍 Manual check found ${matchingPosts.length} posts matching ALL terms`);
+      console.log(`🔍 Manual check found ${unmatchingPosts.length} posts missing at least one term`);
+      
+      // Log the first few unmatching posts for debugging
+      for (let i = 0; i < Math.min(5, unmatchingPosts.length); i++) {
+        console.log(`Unmatching post ${i+1}: Missing terms: ${JSON.stringify(unmatchingPosts[i].missingTerms)}`);
+        console.log(`Content preview: "${unmatchingPosts[i].content}"`);
+      }
+      
+      if (unmatchingPosts.length > 0) {
+        // Delete unmatching posts - these are posts that don't satisfy the AND condition
+        const unmatchingIds = unmatchingPosts.map(p => p.id);
+        const deleteResult = await Post.deleteMany({ _id: { $in: unmatchingIds } });
+        console.log(`🔍 Deleted ${deleteResult.deletedCount} posts that didn't match ALL terms in the AND expression`);
+        
+        // Delete authors that no longer have any posts
+        await deleteAuthorsWithoutPosts(unmatchingPosts.map(p => p.author_id));
+      }
+      
+      console.log(`✅ Filtering complete: ${matchingPosts.length} posts matched the query, ${unmatchingPosts.length} posts were deleted`);
+      return;
+    }
+    
+    // For non-AND queries, use the MongoDB query approach
+    // Parse the Boolean query into a MongoDB query object
+    const searchQuery = processBooleanSearch(query);
+    console.log("🔍 Parsed MongoDB query:", JSON.stringify(searchQuery, null, 2));
+    
+    // Split into batches to avoid overwhelming database
+    const BATCH_SIZE = 100;
+    let matchedPosts: any[] = [];
+    let processedCount = 0;
+    
+    // Process posts in batches
+    for (let i = 0; i < allPosts.length; i += BATCH_SIZE) {
+      const batch = allPosts.slice(i, i + BATCH_SIZE);
+      const postIds = batch.map(post => post._id);
+      
+      // Find posts that match the query within this batch
+      const matchedPostsInBatch = await Post.find({
+        _id: { $in: postIds },
+        ...searchQuery
+      }).select('_id author_id').lean();
+      
+      matchedPosts = [...matchedPosts, ...matchedPostsInBatch];
+      processedCount += batch.length;
+      
+      console.log(`🔄 Progress: ${processedCount}/${allPosts.length} posts processed, ${matchedPosts.length} matches so far`);
+    }
+    
+    // Get IDs of posts to update (those that don't match the query)
+    const unmatchedPosts = allPosts
+      .filter(post => !matchedPosts.some(mp => mp._id.toString() === post._id.toString()));
+    const unmatchedPostIds = unmatchedPosts.map(post => post._id);
+    
+    console.log(`🔍 Found ${matchedPosts.length} matching posts and ${unmatchedPosts.length} non-matching posts`);
+    
+    // Delete posts that don't match the query
+    if (unmatchedPosts.length > 0) {
+      // Delete posts in batches to avoid overwhelming the database
+      const BULK_CHUNK_SIZE = 500;
+      for (let i = 0; i < unmatchedPostIds.length; i += BULK_CHUNK_SIZE) {
+        const bulkChunk = unmatchedPostIds.slice(i, i + BULK_CHUNK_SIZE);
+        const result = await Post.deleteMany({ _id: { $in: bulkChunk } });
+        console.log(`✅ Deleted batch ${Math.floor(i/BULK_CHUNK_SIZE) + 1}: Removed ${result.deletedCount} posts`);
+      }
+      
+      // Delete authors that no longer have any posts
+      await deleteAuthorsWithoutPosts(unmatchedPosts.map(p => p.author_id));
+    }
+    
+    console.log(`✅ Filtering complete: ${matchedPosts.length} posts matched the query, ${unmatchedPosts.length} posts were deleted`);
+  } catch (error) {
+    console.error("❌ Error filtering posts by Boolean query:", error);
+    throw error;
+  }
+};
+
+// Helper function to delete authors that no longer have any posts
+async function deleteAuthorsWithoutPosts(authorIds: string[]): Promise<void> {
+  try {
+    // Skip if no author IDs to check
+    if (!authorIds || authorIds.length === 0) {
+      return;
+    }
+    
+    console.log(`🔍 Checking ${authorIds.length} authors to see if they have any remaining posts...`);
+    const uniqueAuthorIds = [...new Set(authorIds)]; // Remove duplicates
+    
+    // For each author, check if they have any remaining posts
+    const authorsToDelete = [];
+    for (const authorId of uniqueAuthorIds) {
+      const postCount = await Post.countDocuments({ author_id: authorId });
+      if (postCount === 0) {
+        authorsToDelete.push(authorId);
+      }
+    }
+    
+    // Delete authors with no posts
+    if (authorsToDelete.length > 0) {
+      const result = await Author.deleteMany({ author_id: { $in: authorsToDelete } });
+      console.log(`✅ Deleted ${result.deletedCount} authors who no longer have any posts`);
+    } else {
+      console.log(`ℹ️ No authors to delete - all still have posts`);
+    }
+  } catch (error) {
+    console.error("❌ Error deleting authors without posts:", error);
+  }
+}
+
