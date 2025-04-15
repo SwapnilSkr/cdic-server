@@ -1927,14 +1927,14 @@ export const getPlatformStatistics = async (): Promise<any> => {
 
 export const getPostStatistics = async () => {
   try {
-    const totalPosts = await Post.countDocuments({});
-    const flaggedPosts = await Post.countDocuments({ flagged: true });
+    const totalPosts = await Post.countDocuments({fetched: true});
+    const flaggedPosts = await Post.countDocuments({ flagged: true, fetched: true });
     const factCheckedPosts = await Post.countDocuments({
       flaggedStatus: { $in: ["reviewed", "escalated"] },
+      fetched: true,
     });
     const flaggedAuthors = await Author.countDocuments({
       flagged: true,
-      fetched: { $ne: false },
     });
 
     return {
@@ -2591,30 +2591,10 @@ async function deleteAuthorsWithoutPosts(authorIds: string[]): Promise<void> {
 
 export const addFieldToPosts = async (): Promise<void> => {
   try {
-    console.log("🔄 Adding fetched field to all posts in the database");
-
-    // Count total posts
-    const totalCount = await Post.countDocuments({});
-    console.log(`📊 Found ${totalCount} total posts to update`);
-
-    // Add the fetched field in batches
-    const batchSize = 1000;
-    let processed = 0;
-
-    while (processed < totalCount) {
-      const result = await Post.updateMany(
-        { fetched: { $exists: false } },
-        { $set: { fetched: false } },
-        { limit: batchSize }
-      );
-
-      processed += result.modifiedCount;
-      console.log(`✅ Updated batch: ${result.modifiedCount} posts (Total: ${processed}/${totalCount})`);
-
-      // Small pause to avoid overwhelming the database
-      if (processed < totalCount) {
-        await new Promise(resolve => setTimeout(resolve, 100));
-      }
+    const posts = await Post.find({});
+    for (const post of posts) {
+      post.fetched = true;
+      await post.save();
     }
 
     console.log("✅ Successfully added fetched field to all posts");
