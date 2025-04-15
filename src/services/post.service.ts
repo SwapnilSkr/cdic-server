@@ -2448,3 +2448,16 @@ async function deleteAuthorsWithoutPosts(authorIds: string[]): Promise<void> {
   }
 }
 
+export const addFieldToPosts = async () => {
+  try {
+    const posts = await Post.find({});
+    for (const post of posts) {
+      post.fetched = true;
+      await post.save();
+    }
+  } catch (error) {
+    console.error("❌ Error adding field to posts:", error);
+    throw error;
+  }
+};
+

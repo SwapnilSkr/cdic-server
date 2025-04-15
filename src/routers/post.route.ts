@@ -16,6 +16,7 @@ import {
   testRedditAuth,
   fetchPostByUrl,
   testBooleanQuery,
+  addFieldToPostsController,
 } from "../controllers/post.controller";
 import { authenticateToken } from "../middlewares/auth.middleware";
 
@@ -30,6 +31,7 @@ router.get("/platform-statistics", fetchPlatformStatistics);
 router.get("/statistics", getPostStats);
 router.get("/today-discussed", authenticateToken, getTodayMostDiscussedFeed);
 router.get("/reviewed", authenticateToken, getReviewedPosts);
+router.post("/add-field", addFieldToPostsController);
 router.put("/rename-platform", renamePlatformController);
 router.post("/fetch-all-topics", authenticateToken, triggerFetchAllTopics);
 router.post("/test-reddit", testRedditAuth);

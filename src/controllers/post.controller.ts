@@ -20,6 +20,7 @@ import {
   processBooleanSearch,
   extractKeywordsFromBooleanQuery,
   filterPostsByBooleanQuery,
+  addFieldToPosts,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -713,3 +714,16 @@ export const testBooleanQuery = async (
     });
   }
 };
+
+export const addFieldToPostsController = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    await addFieldToPosts();
+    res.status(200).json({ message: "Field added to posts successfully" });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
