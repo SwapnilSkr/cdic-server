@@ -218,9 +218,9 @@ export const toggleAuthorFlagService = async (authorId: string, userId: string) 
     }
 
     const userIdObj = new mongoose.Types.ObjectId(userId);
-    const flaggedByIndex = author.flaggedBy.indexOf(userIdObj);
+    console.log("author flagged", author.flagged)
 
-    if (flaggedByIndex === -1) {
+    if (!author.flagged) {
       // Add flag
       author.flaggedBy.push(userIdObj);
       author.flagged = true;
@@ -228,13 +228,10 @@ export const toggleAuthorFlagService = async (authorId: string, userId: string) 
       author.flaggedStatus = 'pending';
     } else {
       // Remove flag
-      author.flaggedBy = author.flaggedBy.filter(id => !id.equals(userIdObj));
-      
-      if (author.flaggedBy.length === 0) {
-        author.flagged = false;
-        author.flagTimestamp = null;
-        author.flaggedStatus = null;
-      }
+      author.flaggedBy = [];
+      author.flagged = false;
+      author.flagTimestamp = null;
+      author.flaggedStatus = null;
     }
 
     await author.save();

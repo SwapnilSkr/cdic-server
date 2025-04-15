@@ -2039,7 +2039,8 @@ export const getPostDetailsService = async (postId: string) => {
       content: post.caption || post.title,
       author: {
         id: post.author_id,
-        username: author ? author.username : post.username, // Fallback to post username if author not found
+        username: author ? author.username : post.username, 
+        flagged: author ? author.flagged : false,
       },
       flaggedBy: post.flaggedBy.map((user) => ({
         id: user._id,
