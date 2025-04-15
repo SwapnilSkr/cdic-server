@@ -2331,11 +2331,32 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
         .split(/\s+/)
         .filter(word => word.length > 2);
       
+      console.log(`🔍 Checking if phrase "${phrase}" matches content`);
+      console.log(`🔍 Looking for words: ${JSON.stringify(words)}`);
+      
       // Check if ALL words are in the content
-      return words.every(word => {
-        const wordRegex = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i');
-        return wordRegex.test(content);
+      const allWordsPresent = words.every(word => {
+        // Normalize content for more flexible matching
+        // Remove special chars for matching purposes (but keep letters and numbers)
+        const normalizedContent = content.replace(/[^\w\s]/g, ' ').toLowerCase();
+        
+        // Try both word boundary and substring matching
+        const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i');
+        const substringRegex = new RegExp(escapeRegExp(word), 'i');
+        
+        const wordBoundaryMatch = wordBoundaryRegex.test(content);
+        const substringMatch = substringRegex.test(content);
+        
+        // Consider it a match if either method matches
+        const isMatch = wordBoundaryMatch || substringMatch;
+        
+        console.log(`🔍 Word "${word}": ${isMatch ? 'FOUND' : 'NOT FOUND'} (boundary: ${wordBoundaryMatch}, substring: ${substringMatch})`);
+        
+        return isMatch;
       });
+      
+      console.log(`🔍 Phrase "${phrase}" ${allWordsPresent ? 'MATCHES' : 'DOES NOT MATCH'} content`);
+      return allWordsPresent;
     };
     
     // Function to check if post matches the Boolean logic of the query
