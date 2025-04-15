@@ -1493,7 +1493,7 @@ export const getAllPosts = async (
     console.log(`🔍 Starting getAllPosts with skip=${skip}, limit=${limit}`);
     
     // Build optimized query for better index usage
-    const baseQuery: any = { dismissed: { $ne: true } };
+    const baseQuery: any = { dismissed: { $ne: true }, fetched: { $ne: false } };
     
     // Track which indexes we're likely using for monitoring
     const usedIndexes = ['dismissed_1_created_at_-1']; // Base index we're always using
@@ -1932,7 +1932,10 @@ export const getPostStatistics = async () => {
     const factCheckedPosts = await Post.countDocuments({
       flaggedStatus: { $in: ["reviewed", "escalated"] },
     });
-    const flaggedAuthors = await Author.countDocuments({ flagged: true });
+    const flaggedAuthors = await Author.countDocuments({
+      flagged: true,
+      fetched: { $ne: false },
+    });
 
     return {
       totalPosts,
@@ -1957,7 +1960,7 @@ export const getFlaggedPostsService = async (filters: {
     const limit = filters.limit || 10;
     const skip = (page - 1) * limit;
 
-    let query = Post.find({ flagged: true });
+    let query = Post.find({ flagged: true, fetched: { $ne: false } });
 
     // Apply date range filter
     if (filters.dateRange?.from && filters.dateRange?.to) {
@@ -2101,6 +2104,7 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
             $lt: utcTomorrow,
           },
           topic_ids: { $in: topic._id },
+          fetched: { $ne: false },
         })
           .sort({
             likesCount: -1,
@@ -2163,7 +2167,7 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
 
 export const getReviewedPostsService = async (limit: number = 10) => {
   try {
-    const posts = await Post.find({ flaggedStatus: "reviewed" })
+    const posts = await Post.find({ flaggedStatus: "reviewed", fetched: { $ne: false } })
       .sort({ flagTimestamp: -1 })
       .limit(limit);
 
@@ -2317,46 +2321,167 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
       return;
     }
     
-    // Extract the required words from the query
-    // This is an extremely simple approach: just extract all words and require ALL of them to be present
-    const getRequiredWords = (queryStr: string): string[] => {
-      // Remove all boolean operators and special characters
-      const cleanedQuery = queryStr
-        .replace(/\b(AND|OR|NOT)\b/gi, ' ')  // Remove boolean operators
-        .replace(/[()"']/g, ' ')            // Remove parentheses and quotes
-        .replace(/\s+/g, ' ')               // Normalize whitespace
-        .trim();
+    // Enhanced function to parse complex queries with nested parentheses
+    const parseComplexQuery = (queryStr: string): any => {
+      console.log(`🔍 Parsing complex query: "${queryStr}"`);
       
-      // Split into words and filter out short words
-      const words = cleanedQuery
-        .split(' ')
-        .map(word => word.toLowerCase())
-        .filter(word => word.length > 2);  // Filter out very short words
-      
-      // Remove duplicates
-      const uniqueWords = [...new Set(words)];
-      console.log(`🔍 Required words extracted from query: ${uniqueWords.join(', ')}`);
-      return uniqueWords;
-    };
-    
-    // EXTREMELY SIMPLE APPROACH: Just require ALL words to be in the content
-    const requiredWords = getRequiredWords(query);
-    
-    // Function to check if ALL required words are in the content
-    const contentContainsAllWords = (content: string, words: string[]): boolean => {
-      const normalizedContent = content.toLowerCase();
-      
-      for (const word of words) {
-        // Try to find the word with flexible matching
-        const isPresent = normalizedContent.includes(word);
+      // Split query into terms and operators
+      const tokenizeQuery = (query: string): string[] => {
+        const result: string[] = [];
+        let current = '';
+        let inQuotes = false;
+        let quoteChar = '';
         
-        if (!isPresent) {
-          return false; // If any word is missing, return false immediately
+        for (let i = 0; i < query.length; i++) {
+          const char = query[i];
+          
+          if ((char === '"' || char === "'") && (i === 0 || query[i-1] !== '\\')) {
+            if (!inQuotes) {
+              // Start of quoted section
+              if (current) result.push(current);
+              current = char;
+              inQuotes = true;
+              quoteChar = char;
+            } else if (char === quoteChar) {
+              // End of quoted section
+              current += char;
+              result.push(current);
+              current = '';
+              inQuotes = false;
+            } else {
+              // Different quote character inside quotes
+              current += char;
+            }
+          } else if (inQuotes) {
+            // Inside quotes - add everything
+            current += char;
+          } else if (char === '(' || char === ')') {
+            // Handle parentheses as separate tokens
+            if (current) result.push(current);
+            result.push(char);
+            current = '';
+          } else if (char === ' ' && query.substring(i, i+5).match(/^\s+(AND|OR)\s+/i)) {
+            // Handle AND/OR operators
+            if (current) result.push(current);
+            
+            const match = query.substring(i).match(/^\s+(AND|OR)\s+/i);
+            if (match) {
+              result.push(match[1].toUpperCase());
+              i += match[0].length - 1;
+              current = '';
+            }
+          } else {
+            // Regular characters
+            current += char;
+          }
         }
-      }
+        
+        // Add any remaining content
+        if (current) result.push(current);
+        
+        // Remove empty tokens and trim whitespace
+        return result
+          .map(token => token.trim())
+          .filter(token => token.length > 0);
+      };
       
-      return true; // All words were found
+      // Extract words from a quoted or unquoted term
+      const extractWordsFromTerm = (term: string): string[] => {
+        // Handle quoted terms
+        if ((term.startsWith('"') && term.endsWith('"')) || 
+            (term.startsWith("'") && term.endsWith("'"))) {
+          const innerContent = term.substring(1, term.length - 1);
+          return innerContent
+            .split(/\s+/)
+            .map(word => word.toLowerCase())
+            .filter(word => word.length > 2);
+        }
+        
+        // Handle unquoted terms
+        return term
+          .split(/\s+/)
+          .map(word => word.toLowerCase())
+          .filter(word => word.length > 2);
+      };
+      
+      // Build a simple condition check function for a post
+      const buildConditionCheck = (tokens: string[]): (content: string) => boolean => {
+        // Helper to create a word checker for a term
+        const createTermChecker = (term: string): (content: string) => boolean => {
+          const words = extractWordsFromTerm(term);
+          console.log(`🔍 Term "${term}" extracted words:`, words);
+          
+          return (content: string) => {
+            // Check if ALL words are in the content
+            return words.every(word => content.includes(word));
+          };
+        };
+        
+        // If there are no operators, it's a simple term
+        if (!tokens.includes('AND') && !tokens.includes('OR') && !tokens.includes('(') && !tokens.includes(')')) {
+          const term = tokens.join(' ');
+          return createTermChecker(term);
+        }
+        
+        // Helper for expression parsing
+        const parseExpr = (tokens: string[], start: number, end: number): (content: string) => boolean => {
+          // Find the main logical operator (AND or OR) at the current nesting level
+          let mainOp = null;
+          let mainOpPos = -1;
+          let depth = 0;
+          
+          for (let i = start; i < end; i++) {
+            const token = tokens[i];
+            
+            if (token === '(') depth++;
+            else if (token === ')') depth--;
+            else if (depth === 0 && (token === 'AND' || token === 'OR')) {
+              // Found an operator at the current level
+              mainOp = token;
+              mainOpPos = i;
+              // Prefer OR over AND for main operator
+              if (token === 'OR') break;
+            }
+          }
+          
+          if (mainOp && mainOpPos > -1) {
+            // We have a logical operation
+            const leftCheck = parseExpr(tokens, start, mainOpPos);
+            const rightCheck = parseExpr(tokens, mainOpPos + 1, end);
+            
+            if (mainOp === 'AND') {
+              return (content: string) => leftCheck(content) && rightCheck(content);
+            } else {
+              return (content: string) => leftCheck(content) || rightCheck(content);
+            }
+          }
+          
+          // Check for parentheses at the outer level
+          if (tokens[start] === '(' && tokens[end - 1] === ')' && start + 1 < end - 1) {
+            return parseExpr(tokens, start + 1, end - 1);
+          }
+          
+          // This is a simple term or group of terms without operators
+          const term = tokens.slice(start, end)
+            .filter(t => t !== '(' && t !== ')')
+            .join(' ');
+          
+          return createTermChecker(term);
+        };
+        
+        // Parse the full expression
+        return parseExpr(tokens, 0, tokens.length);
+      };
+      
+      // Tokenize and build the checker function
+      const tokens = tokenizeQuery(queryStr);
+      console.log(`🔍 Tokenized query:`, tokens);
+      
+      return buildConditionCheck(tokens);
     };
+    
+    // Create a matcher function for the query
+    const queryMatcher = parseComplexQuery(query);
     
     // Process posts
     const matchingPosts = [];
@@ -2365,8 +2490,8 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
     for (const post of allPosts) {
       const content = (post.caption || post.title || "").toLowerCase();
       
-      // Just check if ALL required words are in the content
-      if (contentContainsAllWords(content, requiredWords)) {
+      // Check if the post matches the query
+      if (queryMatcher(content)) {
         matchingPosts.push({
           id: post._id,
           content: content.substring(0, 100) + "..." // Truncate for readability
@@ -2409,7 +2534,23 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
       await deleteAuthorsWithoutPosts(unmatchingPosts.map(p => p.author_id));
     }
     
-    console.log(`✅ Filtering complete: kept ${matchingPosts.length} matching posts, removed ${unmatchingPosts.length} non-matching posts`);
+    // Mark all matching posts as fetched
+    if (matchingPosts.length > 0) {
+      const matchingIds = matchingPosts.map(p => p.id);
+      
+      // Update posts in batches
+      const BULK_UPDATE_CHUNK_SIZE = 500;
+      for (let i = 0; i < matchingIds.length; i += BULK_UPDATE_CHUNK_SIZE) {
+        const bulkChunk = matchingIds.slice(i, i + BULK_UPDATE_CHUNK_SIZE);
+        const result = await Post.updateMany(
+          { _id: { $in: bulkChunk } },
+          { $set: { fetched: true } }
+        );
+        console.log(`✅ Marked batch ${Math.floor(i/BULK_UPDATE_CHUNK_SIZE) + 1}: Updated ${result.modifiedCount} posts as fetched`);
+      }
+    }
+    
+    console.log(`✅ Filtering complete: kept ${matchingPosts.length} matching posts, removed ${unmatchingPosts.length} non-matching posts, and marked matching posts as fetched`);
   } catch (error) {
     console.error("❌ Error filtering posts by Boolean query:", error);
     throw error;
@@ -2448,13 +2589,35 @@ async function deleteAuthorsWithoutPosts(authorIds: string[]): Promise<void> {
   }
 }
 
-export const addFieldToPosts = async () => {
+export const addFieldToPosts = async (): Promise<void> => {
   try {
-    const posts = await Post.find({});
-    for (const post of posts) {
-      post.fetched = true;
-      await post.save();
+    console.log("🔄 Adding fetched field to all posts in the database");
+
+    // Count total posts
+    const totalCount = await Post.countDocuments({});
+    console.log(`📊 Found ${totalCount} total posts to update`);
+
+    // Add the fetched field in batches
+    const batchSize = 1000;
+    let processed = 0;
+
+    while (processed < totalCount) {
+      const result = await Post.updateMany(
+        { fetched: { $exists: false } },
+        { $set: { fetched: false } },
+        { limit: batchSize }
+      );
+
+      processed += result.modifiedCount;
+      console.log(`✅ Updated batch: ${result.modifiedCount} posts (Total: ${processed}/${totalCount})`);
+
+      // Small pause to avoid overwhelming the database
+      if (processed < totalCount) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
+
+    console.log("✅ Successfully added fetched field to all posts");
   } catch (error) {
     console.error("❌ Error adding field to posts:", error);
     throw error;
