@@ -2364,37 +2364,81 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
       const content = (post.caption || post.title || "").toLowerCase();
       
       // Parse Boolean expressions
-      const parseBooleanExpression = (expr: string): boolean => {
-        // Check for OR operation
-        if (expr.includes(" OR ")) {
-          const parts = splitAtTopLevel(expr, " OR ");
-          return parts.some(part => parseBooleanExpression(part.trim()));
+      const parseBooleanExpression = (expr: string, depth = 0): boolean => {
+        // Prevent infinite recursion by limiting depth
+        if (depth > 20) {
+          console.error(`⚠️ Maximum recursion depth reached for expression: ${expr}`);
+          return false;
         }
         
-        // Check for AND operation
-        if (expr.includes(" AND ")) {
-          const parts = splitAtTopLevel(expr, " AND ");
-          return parts.every(part => parseBooleanExpression(part.trim()));
-        }
+        // Trim expression to avoid issues with whitespace
+        expr = expr.trim();
         
-        // Handle parentheses
-        if (expr.startsWith("(") && expr.endsWith(")")) {
-          return parseBooleanExpression(expr.slice(1, -1).trim());
-        }
+        // Handle empty expressions
+        if (!expr) return true;
         
-        // Handle quoted phrases
-        if ((expr.startsWith('"') && expr.endsWith('"')) || 
-            (expr.startsWith("'") && expr.endsWith("'"))) {
-          const phrase = expr.slice(1, -1);
-          return phraseMatchesContent(phrase, content);
+        try {
+          // Check for OR operation at top level
+          if (expr.includes(" OR ")) {
+            const parts = splitAtTopLevel(expr, " OR ");
+            return parts.some(part => parseBooleanExpression(part.trim(), depth + 1));
+          }
+          
+          // Check for AND operation at top level
+          if (expr.includes(" AND ")) {
+            const parts = splitAtTopLevel(expr, " AND ");
+            return parts.every(part => parseBooleanExpression(part.trim(), depth + 1));
+          }
+          
+          // Handle parentheses
+          if (expr.startsWith("(") && expr.endsWith(")")) {
+            // Check if the parentheses are actually at the top level
+            let isTopLevel = true;
+            let parenCount = 0;
+            
+            for (let i = 0; i < expr.length - 1; i++) {
+              if (expr[i] === '(') parenCount++;
+              if (expr[i] === ')') parenCount--;
+              
+              // If we reach a closing parenthesis before the last character
+              // and the paren count is 0, then the outer parens aren't a matched pair
+              if (i < expr.length - 1 && parenCount === 0) {
+                isTopLevel = false;
+                break;
+              }
+            }
+            
+            if (isTopLevel) {
+              return parseBooleanExpression(expr.slice(1, -1).trim(), depth + 1);
+            }
+          }
+          
+          // Handle quoted phrases
+          if ((expr.startsWith('"') && expr.endsWith('"')) || 
+              (expr.startsWith("'") && expr.endsWith("'"))) {
+            const phrase = expr.slice(1, -1);
+            return phraseMatchesContent(phrase, content);
+          }
+          
+          // Handle regular words (not in quotes)
+          // For single words, do a simple word boundary check
+          const normalizedContent = content.replace(/[^\w\s]/g, ' ').toLowerCase();
+          const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(expr)}\\b`, 'i');
+          const substringRegex = new RegExp(escapeRegExp(expr), 'i');
+          
+          return wordBoundaryRegex.test(content) || substringRegex.test(content);
+        } catch (error) {
+          console.error(`⚠️ Error parsing expression: "${expr}" - ${error}`);
+          return false;
         }
-        
-        // Handle regular words (not in quotes)
-        const wordRegex = new RegExp(`\\b${escapeRegExp(expr)}\\b`, 'i');
-        return wordRegex.test(content);
       };
       
-      return parseBooleanExpression(query);
+      try {
+        return parseBooleanExpression(query);
+      } catch (error) {
+        console.error(`⚠️ Error evaluating query: "${query}" - ${error}`);
+        return false;
+      }
     };
     
     // Function to split a string at top-level occurrences of a delimiter
