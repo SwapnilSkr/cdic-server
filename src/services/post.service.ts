@@ -2317,202 +2317,83 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
       return;
     }
     
-    // Debug some post content
-    console.log("🔍 Sample post captions:");
-    for (let i = 0; i < Math.min(5, allPosts.length); i++) {
-      console.log(`Post ${i+1}: "${allPosts[i].caption || allPosts[i].title || '(empty)'}"`);
-    }
-    
-    // Function to extract words from a phrase and check if ALL words are in the content
-    const phraseMatchesContent = (phrase: string, content: string): boolean => {
-      // Extract individual words
-      const words = phrase
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(word => word.length > 2);
+    // Extract the required words from the query
+    // This is an extremely simple approach: just extract all words and require ALL of them to be present
+    const getRequiredWords = (queryStr: string): string[] => {
+      // Remove all boolean operators and special characters
+      const cleanedQuery = queryStr
+        .replace(/\b(AND|OR|NOT)\b/gi, ' ')  // Remove boolean operators
+        .replace(/[()"']/g, ' ')            // Remove parentheses and quotes
+        .replace(/\s+/g, ' ')               // Normalize whitespace
+        .trim();
       
-      console.log(`🔍 Checking if phrase "${phrase}" matches content`);
-      console.log(`🔍 Looking for words: ${JSON.stringify(words)}`);
+      // Split into words and filter out short words
+      const words = cleanedQuery
+        .split(' ')
+        .map(word => word.toLowerCase())
+        .filter(word => word.length > 2);  // Filter out very short words
       
-      // Check if ALL words are in the content
-      const allWordsPresent = words.every(word => {
-        // Normalize content for more flexible matching
-        // Remove special chars for matching purposes (but keep letters and numbers)
-        const normalizedContent = content.replace(/[^\w\s]/g, ' ').toLowerCase();
-        
-        // Try both word boundary and substring matching
-        const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i');
-        const substringRegex = new RegExp(escapeRegExp(word), 'i');
-        
-        const wordBoundaryMatch = wordBoundaryRegex.test(content);
-        const substringMatch = substringRegex.test(content);
-        
-        // Consider it a match if either method matches
-        const isMatch = wordBoundaryMatch || substringMatch;
-        
-        console.log(`🔍 Word "${word}": ${isMatch ? 'FOUND' : 'NOT FOUND'} (boundary: ${wordBoundaryMatch}, substring: ${substringMatch})`);
-        
-        return isMatch;
-      });
-      
-      console.log(`🔍 Phrase "${phrase}" ${allWordsPresent ? 'MATCHES' : 'DOES NOT MATCH'} content`);
-      return allWordsPresent;
+      // Remove duplicates
+      const uniqueWords = [...new Set(words)];
+      console.log(`🔍 Required words extracted from query: ${uniqueWords.join(', ')}`);
+      return uniqueWords;
     };
     
-    // Function to check if post matches the Boolean logic of the query
-    const postMatchesBooleanQuery = (post: any, query: string): boolean => {
-      const content = (post.caption || post.title || "").toLowerCase();
-      
-      // Parse Boolean expressions
-      const parseBooleanExpression = (expr: string, depth = 0): boolean => {
-        // Prevent infinite recursion by limiting depth
-        if (depth > 20) {
-          console.error(`⚠️ Maximum recursion depth reached for expression: ${expr}`);
-          return false;
-        }
-        
-        // Trim expression to avoid issues with whitespace
-        expr = expr.trim();
-        
-        // Handle empty expressions
-        if (!expr) return true;
-        
-        try {
-          // Check for OR operation at top level
-          if (expr.includes(" OR ")) {
-            const parts = splitAtTopLevel(expr, " OR ");
-            return parts.some(part => parseBooleanExpression(part.trim(), depth + 1));
-          }
-          
-          // Check for AND operation at top level
-          if (expr.includes(" AND ")) {
-            const parts = splitAtTopLevel(expr, " AND ");
-            return parts.every(part => parseBooleanExpression(part.trim(), depth + 1));
-          }
-          
-          // Handle parentheses
-          if (expr.startsWith("(") && expr.endsWith(")")) {
-            // Check if the parentheses are actually at the top level
-            let isTopLevel = true;
-            let parenCount = 0;
-            
-            for (let i = 0; i < expr.length - 1; i++) {
-              if (expr[i] === '(') parenCount++;
-              if (expr[i] === ')') parenCount--;
-              
-              // If we reach a closing parenthesis before the last character
-              // and the paren count is 0, then the outer parens aren't a matched pair
-              if (i < expr.length - 1 && parenCount === 0) {
-                isTopLevel = false;
-                break;
-              }
-            }
-            
-            if (isTopLevel) {
-              return parseBooleanExpression(expr.slice(1, -1).trim(), depth + 1);
-            }
-          }
-          
-          // Handle quoted phrases
-          if ((expr.startsWith('"') && expr.endsWith('"')) || 
-              (expr.startsWith("'") && expr.endsWith("'"))) {
-            const phrase = expr.slice(1, -1);
-            return phraseMatchesContent(phrase, content);
-          }
-          
-          // Handle regular words (not in quotes)
-          // For single words, do a simple word boundary check
-          const normalizedContent = content.replace(/[^\w\s]/g, ' ').toLowerCase();
-          const wordBoundaryRegex = new RegExp(`\\b${escapeRegExp(expr)}\\b`, 'i');
-          const substringRegex = new RegExp(escapeRegExp(expr), 'i');
-          
-          return wordBoundaryRegex.test(content) || substringRegex.test(content);
-        } catch (error) {
-          console.error(`⚠️ Error parsing expression: "${expr}" - ${error}`);
-          return false;
-        }
-      };
-      
-      try {
-        return parseBooleanExpression(query);
-      } catch (error) {
-        console.error(`⚠️ Error evaluating query: "${query}" - ${error}`);
-        return false;
-      }
-    };
+    // EXTREMELY SIMPLE APPROACH: Just require ALL words to be in the content
+    const requiredWords = getRequiredWords(query);
     
-    // Function to split a string at top-level occurrences of a delimiter
-    // This handles nested parentheses correctly
-    const splitAtTopLevel = (str: string, delimiter: string): string[] => {
-      const result: string[] = [];
-      let start = 0;
-      let parenCount = 0;
-      let inSingleQuote = false;
-      let inDoubleQuote = false;
+    // Function to check if ALL required words are in the content
+    const contentContainsAllWords = (content: string, words: string[]): boolean => {
+      const normalizedContent = content.toLowerCase();
       
-      for (let i = 0; i < str.length; i++) {
-        const char = str[i];
+      for (const word of words) {
+        // Try to find the word with flexible matching
+        const isPresent = normalizedContent.includes(word);
         
-        // Handle quotes
-        if (char === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote;
-        if (char === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote;
-        
-        // Skip delimiter checks if inside quotes
-        if (inSingleQuote || inDoubleQuote) continue;
-        
-        // Handle parentheses
-        if (char === '(') parenCount++;
-        if (char === ')') parenCount--;
-        
-        // Check for delimiter at top level
-        if (parenCount === 0 && 
-            str.substring(i, i + delimiter.length) === delimiter) {
-          result.push(str.substring(start, i));
-          start = i + delimiter.length;
-          i += delimiter.length - 1; // Skip the delimiter
+        if (!isPresent) {
+          return false; // If any word is missing, return false immediately
         }
       }
       
-      // Add the final part
-      result.push(str.substring(start));
-      return result;
+      return true; // All words were found
     };
     
-    // Process posts to see if they match the Boolean query
+    // Process posts
     const matchingPosts = [];
     const unmatchingPosts = [];
     
     for (const post of allPosts) {
-      const isMatch = postMatchesBooleanQuery(post, query);
+      const content = (post.caption || post.title || "").toLowerCase();
       
-      if (isMatch) {
+      // Just check if ALL required words are in the content
+      if (contentContainsAllWords(content, requiredWords)) {
         matchingPosts.push({
           id: post._id,
-          content: (post.caption || post.title || "").substring(0, 100) + "..."
+          content: content.substring(0, 100) + "..." // Truncate for readability
         });
       } else {
         unmatchingPosts.push({
           id: post._id,
           author_id: post.author_id,
-          content: (post.caption || post.title || "").substring(0, 100) + "..."
+          content: content.substring(0, 100) + "..." // Truncate for readability
         });
       }
     }
     
-    console.log(`🔍 Found ${matchingPosts.length} posts matching the Boolean query`);
-    console.log(`🔍 Found ${unmatchingPosts.length} posts not matching the query`);
+    console.log(`🔍 Found ${matchingPosts.length} matching posts and ${unmatchingPosts.length} non-matching posts`);
     
-    // Log a few examples of matched posts
+    // Log examples for verification
+    console.log("\n📑 MATCHING POSTS EXAMPLES:");
     for (let i = 0; i < Math.min(5, matchingPosts.length); i++) {
-      console.log(`Matching post ${i+1}: Content preview: "${matchingPosts[i].content}"`);
+      console.log(`✅ Post ${i+1}: "${matchingPosts[i].content}"`);
     }
     
-    // Log a few examples of unmatched posts
+    console.log("\n📑 NON-MATCHING POSTS EXAMPLES:");
     for (let i = 0; i < Math.min(5, unmatchingPosts.length); i++) {
-      console.log(`Unmatching post ${i+1}: Content preview: "${unmatchingPosts[i].content}"`);
+      console.log(`❌ Post ${i+1}: "${unmatchingPosts[i].content}"`);
     }
     
-    // Delete posts that don't match the Boolean query
+    // Delete posts that don't match
     if (unmatchingPosts.length > 0) {
       const unmatchingIds = unmatchingPosts.map(p => p.id);
       
@@ -2528,7 +2409,7 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
       await deleteAuthorsWithoutPosts(unmatchingPosts.map(p => p.author_id));
     }
     
-    console.log(`✅ Filtering complete: ${matchingPosts.length} posts matched the Boolean query, ${unmatchingPosts.length} posts were deleted`);
+    console.log(`✅ Filtering complete: kept ${matchingPosts.length} matching posts, removed ${unmatchingPosts.length} non-matching posts`);
   } catch (error) {
     console.error("❌ Error filtering posts by Boolean query:", error);
     throw error;
