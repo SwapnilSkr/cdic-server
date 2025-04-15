@@ -2323,124 +2323,147 @@ export const filterPostsByBooleanQuery = async (topicId: string, query: string):
       console.log(`Post ${i+1}: "${allPosts[i].caption || allPosts[i].title || '(empty)'}"`);
     }
     
-    // Manually test for presence of both terms in an AND expression
-    if (query.includes(" AND ")) {
-      console.log("🔍 AND expression detected - performing strict manual check");
-      const parts = query.split(" AND ");
+    // Function to extract words from a phrase and check if ALL words are in the content
+    const phraseMatchesContent = (phrase: string, content: string): boolean => {
+      // Extract individual words
+      const words = phrase
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(word => word.length > 2);
       
-      // Extract the terms (removing quotes)
-      const terms = parts.map(part => {
-        const trimmed = part.trim();
-        if ((trimmed.startsWith("'") && trimmed.endsWith("'")) || 
-            (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
-          return trimmed.substring(1, trimmed.length - 1).toLowerCase();
-        }
-        return trimmed.toLowerCase();
+      // Check if ALL words are in the content
+      return words.every(word => {
+        const wordRegex = new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i');
+        return wordRegex.test(content);
       });
+    };
+    
+    // Function to check if post matches the Boolean logic of the query
+    const postMatchesBooleanQuery = (post: any, query: string): boolean => {
+      const content = (post.caption || post.title || "").toLowerCase();
       
-      console.log(`🔍 Checking for all terms: ${JSON.stringify(terms)}`);
-      
-      // Check each post for all required terms
-      const matchingPosts = [];
-      const unmatchingPosts = [];
-      
-      for (const post of allPosts) {
-        const content = (post.caption || post.title || "").toLowerCase();
-        const missingTerms = [];
-        
-        // Check for each term
-        for (const term of terms) {
-          if (!content.includes(term)) {
-            missingTerms.push(term);
-          }
+      // Parse Boolean expressions
+      const parseBooleanExpression = (expr: string): boolean => {
+        // Check for OR operation
+        if (expr.includes(" OR ")) {
+          const parts = splitAtTopLevel(expr, " OR ");
+          return parts.some(part => parseBooleanExpression(part.trim()));
         }
         
-        if (missingTerms.length === 0) {
-          // Post contains all required terms
-          matchingPosts.push(post);
-        } else {
-          // Post is missing at least one required term
-          unmatchingPosts.push({
-            id: post._id,
-            author_id: post.author_id,
-            missingTerms,
-            content: content.substring(0, 100) + "..." // Truncate for readability
-          });
+        // Check for AND operation
+        if (expr.includes(" AND ")) {
+          const parts = splitAtTopLevel(expr, " AND ");
+          return parts.every(part => parseBooleanExpression(part.trim()));
+        }
+        
+        // Handle parentheses
+        if (expr.startsWith("(") && expr.endsWith(")")) {
+          return parseBooleanExpression(expr.slice(1, -1).trim());
+        }
+        
+        // Handle quoted phrases
+        if ((expr.startsWith('"') && expr.endsWith('"')) || 
+            (expr.startsWith("'") && expr.endsWith("'"))) {
+          const phrase = expr.slice(1, -1);
+          return phraseMatchesContent(phrase, content);
+        }
+        
+        // Handle regular words (not in quotes)
+        const wordRegex = new RegExp(`\\b${escapeRegExp(expr)}\\b`, 'i');
+        return wordRegex.test(content);
+      };
+      
+      return parseBooleanExpression(query);
+    };
+    
+    // Function to split a string at top-level occurrences of a delimiter
+    // This handles nested parentheses correctly
+    const splitAtTopLevel = (str: string, delimiter: string): string[] => {
+      const result: string[] = [];
+      let start = 0;
+      let parenCount = 0;
+      let inSingleQuote = false;
+      let inDoubleQuote = false;
+      
+      for (let i = 0; i < str.length; i++) {
+        const char = str[i];
+        
+        // Handle quotes
+        if (char === '"' && !inSingleQuote) inDoubleQuote = !inDoubleQuote;
+        if (char === "'" && !inDoubleQuote) inSingleQuote = !inSingleQuote;
+        
+        // Skip delimiter checks if inside quotes
+        if (inSingleQuote || inDoubleQuote) continue;
+        
+        // Handle parentheses
+        if (char === '(') parenCount++;
+        if (char === ')') parenCount--;
+        
+        // Check for delimiter at top level
+        if (parenCount === 0 && 
+            str.substring(i, i + delimiter.length) === delimiter) {
+          result.push(str.substring(start, i));
+          start = i + delimiter.length;
+          i += delimiter.length - 1; // Skip the delimiter
         }
       }
       
-      console.log(`🔍 Manual check found ${matchingPosts.length} posts matching ALL terms`);
-      console.log(`🔍 Manual check found ${unmatchingPosts.length} posts missing at least one term`);
+      // Add the final part
+      result.push(str.substring(start));
+      return result;
+    };
+    
+    // Process posts to see if they match the Boolean query
+    const matchingPosts = [];
+    const unmatchingPosts = [];
+    
+    for (const post of allPosts) {
+      const isMatch = postMatchesBooleanQuery(post, query);
       
-      // Log the first few unmatching posts for debugging
-      for (let i = 0; i < Math.min(5, unmatchingPosts.length); i++) {
-        console.log(`Unmatching post ${i+1}: Missing terms: ${JSON.stringify(unmatchingPosts[i].missingTerms)}`);
-        console.log(`Content preview: "${unmatchingPosts[i].content}"`);
+      if (isMatch) {
+        matchingPosts.push({
+          id: post._id,
+          content: (post.caption || post.title || "").substring(0, 100) + "..."
+        });
+      } else {
+        unmatchingPosts.push({
+          id: post._id,
+          author_id: post.author_id,
+          content: (post.caption || post.title || "").substring(0, 100) + "..."
+        });
       }
-      
-      if (unmatchingPosts.length > 0) {
-        // Delete unmatching posts - these are posts that don't satisfy the AND condition
-        const unmatchingIds = unmatchingPosts.map(p => p.id);
-        const deleteResult = await Post.deleteMany({ _id: { $in: unmatchingIds } });
-        console.log(`🔍 Deleted ${deleteResult.deletedCount} posts that didn't match ALL terms in the AND expression`);
-        
-        // Delete authors that no longer have any posts
-        await deleteAuthorsWithoutPosts(unmatchingPosts.map(p => p.author_id));
-      }
-      
-      console.log(`✅ Filtering complete: ${matchingPosts.length} posts matched the query, ${unmatchingPosts.length} posts were deleted`);
-      return;
     }
     
-    // For non-AND queries, use the MongoDB query approach
-    // Parse the Boolean query into a MongoDB query object
-    const searchQuery = processBooleanSearch(query);
-    console.log("🔍 Parsed MongoDB query:", JSON.stringify(searchQuery, null, 2));
+    console.log(`🔍 Found ${matchingPosts.length} posts matching the Boolean query`);
+    console.log(`🔍 Found ${unmatchingPosts.length} posts not matching the query`);
     
-    // Split into batches to avoid overwhelming database
-    const BATCH_SIZE = 100;
-    let matchedPosts: any[] = [];
-    let processedCount = 0;
-    
-    // Process posts in batches
-    for (let i = 0; i < allPosts.length; i += BATCH_SIZE) {
-      const batch = allPosts.slice(i, i + BATCH_SIZE);
-      const postIds = batch.map(post => post._id);
-      
-      // Find posts that match the query within this batch
-      const matchedPostsInBatch = await Post.find({
-        _id: { $in: postIds },
-        ...searchQuery
-      }).select('_id author_id').lean();
-      
-      matchedPosts = [...matchedPosts, ...matchedPostsInBatch];
-      processedCount += batch.length;
-      
-      console.log(`🔄 Progress: ${processedCount}/${allPosts.length} posts processed, ${matchedPosts.length} matches so far`);
+    // Log a few examples of matched posts
+    for (let i = 0; i < Math.min(5, matchingPosts.length); i++) {
+      console.log(`Matching post ${i+1}: Content preview: "${matchingPosts[i].content}"`);
     }
     
-    // Get IDs of posts to update (those that don't match the query)
-    const unmatchedPosts = allPosts
-      .filter(post => !matchedPosts.some(mp => mp._id.toString() === post._id.toString()));
-    const unmatchedPostIds = unmatchedPosts.map(post => post._id);
+    // Log a few examples of unmatched posts
+    for (let i = 0; i < Math.min(5, unmatchingPosts.length); i++) {
+      console.log(`Unmatching post ${i+1}: Content preview: "${unmatchingPosts[i].content}"`);
+    }
     
-    console.log(`🔍 Found ${matchedPosts.length} matching posts and ${unmatchedPosts.length} non-matching posts`);
-    
-    // Delete posts that don't match the query
-    if (unmatchedPosts.length > 0) {
+    // Delete posts that don't match the Boolean query
+    if (unmatchingPosts.length > 0) {
+      const unmatchingIds = unmatchingPosts.map(p => p.id);
+      
       // Delete posts in batches to avoid overwhelming the database
       const BULK_CHUNK_SIZE = 500;
-      for (let i = 0; i < unmatchedPostIds.length; i += BULK_CHUNK_SIZE) {
-        const bulkChunk = unmatchedPostIds.slice(i, i + BULK_CHUNK_SIZE);
+      for (let i = 0; i < unmatchingIds.length; i += BULK_CHUNK_SIZE) {
+        const bulkChunk = unmatchingIds.slice(i, i + BULK_CHUNK_SIZE);
         const result = await Post.deleteMany({ _id: { $in: bulkChunk } });
         console.log(`✅ Deleted batch ${Math.floor(i/BULK_CHUNK_SIZE) + 1}: Removed ${result.deletedCount} posts`);
       }
       
       // Delete authors that no longer have any posts
-      await deleteAuthorsWithoutPosts(unmatchedPosts.map(p => p.author_id));
+      await deleteAuthorsWithoutPosts(unmatchingPosts.map(p => p.author_id));
     }
     
-    console.log(`✅ Filtering complete: ${matchedPosts.length} posts matched the query, ${unmatchedPosts.length} posts were deleted`);
+    console.log(`✅ Filtering complete: ${matchingPosts.length} posts matched the Boolean query, ${unmatchingPosts.length} posts were deleted`);
   } catch (error) {
     console.error("❌ Error filtering posts by Boolean query:", error);
     throw error;
