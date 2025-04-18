@@ -1488,21 +1488,42 @@ export const getAllPosts = async (
   skip: number,
   limit: number,
   filters: FilterOptions,
-  userId: string
+  userId: string // Use the userId passed from controller
 ) => {
   try {
     const startTime = Date.now();
-    console.log(`🔍 Starting getAllPosts with skip=${skip}, limit=${limit}`);
-    
+    console.log(`🔍 Starting getAllPosts with skip=${skip}, limit=${limit}, userId=${userId}`);
+
+    // Fetch user's blocked accounts
+    const user = await User.findById(userId).select('blockedAccounts').lean();
+    const blockedAccounts = user?.blockedAccounts || [];
+
     // Build optimized query for better index usage
     const baseQuery: any = { dismissed: { $ne: true }, fetched: { $ne: false } };
+
+    // Add condition to exclude blocked accounts
+    if (blockedAccounts.length > 0) {
+      // Create an $or condition for each blocked account
+      const blockConditions = blockedAccounts.map(account => ({
+        platform: account.platform,
+        username: account.identifier // Assuming 'username' in Post matches 'identifier' in User
+      }));
+      // Use $nor to exclude posts matching any of the block conditions
+      baseQuery.$nor = [{ $or: blockConditions }];
+    }
     
     // Track which indexes we're likely using for monitoring
     const usedIndexes = ['dismissed_1_created_at_-1']; // Base index we're always using
     
     // Apply platform filter - leverages compound index { dismissed: 1, platform: 1 }
     if (filters.platforms && filters.platforms.length > 0) {
-      baseQuery.platform = { $in: filters.platforms };
+      if (baseQuery.platform) {
+        // Combine if platform filter already exists (e.g., from $nor)
+        baseQuery.$and = baseQuery.$and || [];
+        baseQuery.$and.push({ platform: { $in: filters.platforms }});
+      } else {
+         baseQuery.platform = { $in: filters.platforms };
+      }
       usedIndexes.push('dismissed_1_platform_1');
     }
     
@@ -1511,40 +1532,69 @@ export const getAllPosts = async (
       const startDate = new Date(filters.dateRange.start);
       const endDate = new Date(filters.dateRange.end);
       endDate.setHours(23, 59, 59, 999);
-      baseQuery.created_at = { $gte: startDate, $lte: endDate };
+      if (baseQuery.created_at) {
+         baseQuery.$and = baseQuery.$and || [];
+         baseQuery.$and.push({ created_at: { $gte: startDate, $lte: endDate } });
+      } else {
+        baseQuery.created_at = { $gte: startDate, $lte: endDate };
+      }
     }
     
     // Apply flag status filter - uses flag index
     if (filters.flagStatus) {
-      baseQuery.flagged = filters.flagStatus === "flagged";
-      baseQuery.flaggedBy = { $in: [userId] };
+      const flagCondition: any = { flagged: filters.flagStatus === "flagged" };
+      if (userId) {
+        // Only show posts flagged by the current user if filtering by flagged status
+        flagCondition.flaggedBy = userId; 
+      }
+      if (baseQuery.flagged || baseQuery.flaggedBy) {
+         baseQuery.$and = baseQuery.$and || [];
+         baseQuery.$and.push(flagCondition);
+      } else {
+         Object.assign(baseQuery, flagCondition);
+      }
       usedIndexes.push('flagged_1_flaggedBy_1');
     }
     
     // Process keyword search with Boolean search logic
     if (filters.keyword) {
-      // Try to use text index for better performance
       const searchQuery = processBooleanSearch(filters.keyword);
-      
-      if (searchQuery) {
-        // Boolean search query handled by custom parser
-        Object.assign(baseQuery, searchQuery);
+      let keywordCondition: any = null;
+
+      if (searchQuery && Object.keys(searchQuery).length > 0) {
+        keywordCondition = searchQuery;
       } else if (filters.keyword.includes(" ") && filters.keyword.length > 5) {
-        // Use full text index for multi-word searches
-        baseQuery.$text = { $search: filters.keyword };
+        keywordCondition = { $text: { $search: filters.keyword } };
         usedIndexes.push('caption_text_username_text');
       } else {
-        // For simple single-word queries, use optimized regex
-        // This approach is faster than $text for simple queries
         const searchTerm = escapeRegExp(filters.keyword);
-        baseQuery.$or = [
-          { platform: { $regex: searchTerm, $options: "i" } },
-          { username: { $regex: searchTerm, $options: "i" } },
-          { caption: { $regex: searchTerm, $options: "i" } },
-        ];
+        keywordCondition = {
+          $or: [
+            { platform: { $regex: searchTerm, $options: "i" } },
+            { username: { $regex: searchTerm, $options: "i" } },
+            { caption: { $regex: searchTerm, $options: "i" } },
+          ]
+        };
+      }
+      
+      // Combine keyword condition using $and
+      if (keywordCondition) {
+        if (baseQuery.$and) {
+          baseQuery.$and.push(keywordCondition);
+        } else if (Object.keys(baseQuery).filter(k => k !== '$nor').length > 0) {
+          // If other conditions exist besides $nor, create $and
+          const existingConditions = { ...baseQuery };
+          delete existingConditions.$nor;
+          baseQuery.$and = [existingConditions, keywordCondition];
+          // Remove original keys now under $and
+          Object.keys(existingConditions).forEach(key => delete baseQuery[key]);
+        } else {
+          // Only $nor exists, merge directly
+          Object.assign(baseQuery, keywordCondition);
+        }
       }
     }
-    
+
     console.log(`⏱️ Query prepared in ${Date.now() - startTime}ms using likely indexes: ${usedIndexes.join(', ')}`);
     console.log(`Query:`, JSON.stringify(baseQuery, null, 2));
     
@@ -1561,25 +1611,35 @@ export const getAllPosts = async (
     }
     
     // Use MongoDB aggregation for better performance with large datasets
-    const countPipeline = [
-      { $match: baseQuery },
-      { $group: {
+    // Filter stage for counts
+    const filterStage = { $match: baseQuery }; 
+    
+    // Group stage for counts
+    const groupStage = { 
+      $group: {
           _id: null,
           totalPosts: { $sum: 1 },
           flaggedPosts: { $sum: { $cond: [{ $eq: ["$flagged", true] }, 1, 0] } }
-      }}
-    ];
-    
-    // Use separate lightweight query for total counts (not affected by filters except dismissed)
+      }
+    };
+
+    // Count pipeline for filtered results
+    const countPipeline = [filterStage, groupStage];
+
+    // Total counts pipeline (only ignoring dismissed, not other filters or $nor)
+    const totalBaseQuery: any = { dismissed: { $ne: true } }; // Explicitly type as any
+    if (baseQuery.$nor) { // Apply block filter to total counts too
+      totalBaseQuery.$nor = baseQuery.$nor;
+    }
     const totalCountsPipeline = [
-      { $match: { dismissed: { $ne: true } } },
+      { $match: totalBaseQuery }, 
       { $group: {
           _id: null,
           totalAllPosts: { $sum: 1 },
           totalAllFlagged: { $sum: { $cond: [{ $eq: ["$flagged", true] }, 1, 0] } }
       }}
     ];
-    
+
     // Execute main query and count operations in parallel
     console.log(`⏱️ Starting data fetch at ${Date.now() - startTime}ms`);
     
@@ -1596,7 +1656,7 @@ export const getAllPosts = async (
       // Count query for filtered posts
       Post.aggregate(countPipeline).exec(),
       
-      // Count query for all posts (regardless of filter)
+      // Count query for all posts (matching block filter)
       Post.aggregate(totalCountsPipeline).exec()
     ]);
     
@@ -1956,46 +2016,62 @@ export const getFlaggedPostsService = async (filters: {
   status?: string | null;
   page?: number;
   limit?: number;
-}) => {
+}, userId: string) => { // Add userId parameter
   try {
     const page = filters.page || 1;
     const limit = filters.limit || 10;
     const skip = (page - 1) * limit;
 
-    let query = Post.find({ flagged: true, fetched: { $ne: false } });
+    // Fetch user's blocked accounts
+    const user = await User.findById(userId).select('blockedAccounts').lean();
+    const blockedAccounts = user?.blockedAccounts || [];
+
+    // Base query conditions
+    const baseConditions: any = { flagged: true, fetched: { $ne: false } }; 
+
+    // Apply blocked accounts filter
+    if (blockedAccounts.length > 0) {
+      const blockConditions = blockedAccounts.map(account => ({
+        platform: account.platform,
+        username: account.identifier
+      }));
+      baseConditions.$nor = [{ $or: blockConditions }];
+    }
 
     // Apply date range filter
     if (filters.dateRange?.from && filters.dateRange?.to) {
-      query = query
-        .where("flagTimestamp")
-        .gte(new Date(filters.dateRange.from).getTime())
-        .lte(new Date(filters.dateRange.to).getTime());
+      baseConditions.flagTimestamp = {
+        $gte: new Date(filters.dateRange.from),
+        $lte: new Date(filters.dateRange.to)
+      };
     }
 
     // Apply status filter
     if (filters.status) {
-      query = query.where("flaggedStatus").equals(filters.status);
+      baseConditions.flaggedStatus = filters.status;
     }
 
-    // Get total count for pagination
-    const totalCount = await Post.countDocuments(query.getQuery());
+    // Use the conditions for counting first
+    const totalCount = await Post.countDocuments(baseConditions);
 
-    // Add pagination to query
-    query = query
+    // Build the final query for fetching posts
+    const posts = await Post.find(baseConditions)
       .skip(skip)
       .limit(limit)
-      .populate("flaggedBy", "name email")
-      .sort({ flagTimestamp: -1 }); // Sort by most recently flagged
-
-    const posts = await query.exec();
+      .populate<{ flaggedBy: IUser[] }>('flaggedBy', 'name email') // Ensure populated type is correct
+      .sort({ flagTimestamp: -1 }) // Sort by most recently flagged
+      .lean() // Use lean for performance
+      .exec();
 
     // Transform posts
     const transformedPosts = posts.map((post) => ({
       id: post._id,
       content: post.caption || post.title,
       author: post.username,
-      flaggedBy: post.flaggedBy.length,
-      flaggedUsers: post.flaggedBy,
+      // flaggedBy count might be inaccurate if we only populate the current user later?
+      // Let's map the populated users if available
+      flaggedBy: post.flaggedBy?.map(u => u.name) || [], 
+      flaggedUsers: post.flaggedBy?.map(u => ({ id: u._id, name: u.name, email: u.email })) || [],
       status: post.flaggedStatus,
       timestamp: post.flagTimestamp,
       platform: post.platform,
@@ -2059,8 +2135,22 @@ export const getPostDetailsService = async (postId: string) => {
   }
 };
 
-export const getTodayMostDiscussedFeedWithTopics = async () => {
+export const getTodayMostDiscussedFeedWithTopics = async (userId: string) => { // Add userId parameter
   try {
+    // Fetch user's blocked accounts
+    const user = await User.findById(userId).select('blockedAccounts').lean();
+    const blockedAccounts = user?.blockedAccounts || [];
+
+    // Build the $nor condition for blocked accounts
+    let blockFilter: any = {};
+    if (blockedAccounts.length > 0) {
+      const blockConditions = blockedAccounts.map(account => ({
+        platform: account.platform,
+        username: account.identifier
+      }));
+      blockFilter = { $nor: [{ $or: blockConditions }] };
+    }
+
     // Get current time in IST
     const now = new Date();
     const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
@@ -2101,19 +2191,24 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
     // Get today's posts and calculate engagement for each topic
     const topicPosts = await Promise.all(
       topics.map(async (topic) => {
-        const posts = await Post.find({
+        // Define the base query conditions for this topic
+        const postQueryConditions: any = {
           created_at: {
             $gte: utcToday,
             $lt: utcTomorrow,
           },
-          topic_ids: { $in: topic._id },
+          topic_ids: { $in: [topic._id] }, // Ensure correct usage: [topic._id]
           fetched: { $ne: false },
-        })
+          ...blockFilter // Spread the block filter conditions here
+        };
+
+        const posts = await Post.find(postQueryConditions)
           .sort({
             likesCount: -1,
             commentsCount: -1,
           })
-          .limit(5);
+          .limit(5)
+          .lean(); // Use lean here too
 
         const totalEngagement = posts.reduce(
           (sum, post) =>
@@ -2128,6 +2223,8 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
             _id: post._id,
             content: post.caption || post.title,
             platform: post.platform,
+            // Include username for potential debugging or future use
+            username: post.username, 
             topic: topic.name,
             timestamp: post.created_at,
             post_url: post.post_url,
@@ -2146,8 +2243,12 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
       .slice(0, 10);
 
     // Flatten the posts array and sort by engagement
+    // Filter out any posts that might have slipped through (e.g., if block list updated mid-process)
+    // This secondary filter is less efficient but adds robustness
+    const blockedSet = new Set(blockedAccounts.map(acc => `${acc.platform}:::${acc.identifier}`));
     const allPosts = sortedTopics
       .flatMap((topic) => topic.posts)
+      .filter(post => !blockedSet.has(`${post.platform}:::${post.username}`))
       .sort(
         (a, b) =>
           b.engagement.likes +
@@ -2159,7 +2260,7 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
       items: allPosts,
       topicsEngagement: sortedTopics.map((t) => ({
         topic: t.topic,
-        engagement: t.totalEngagement,
+        engagement: t.totalEngagement, // Corrected from t.engagement
       })),
     };
   } catch (error) {
@@ -2168,11 +2269,31 @@ export const getTodayMostDiscussedFeedWithTopics = async () => {
   }
 };
 
-export const getReviewedPostsService = async (limit: number = 10) => {
+export const getReviewedPostsService = async (userId: string, limit: number = 10) => { // Add userId parameter
   try {
-    const posts = await Post.find({ flaggedStatus: "reviewed", fetched: { $ne: false } })
+    // Fetch user's blocked accounts
+    const user = await User.findById(userId).select('blockedAccounts').lean();
+    const blockedAccounts = user?.blockedAccounts || [];
+
+    // Base query conditions
+    const baseConditions: any = { 
+        flaggedStatus: "reviewed", 
+        fetched: { $ne: false } 
+    };
+
+    // Apply blocked accounts filter
+    if (blockedAccounts.length > 0) {
+      const blockConditions = blockedAccounts.map(account => ({
+        platform: account.platform,
+        username: account.identifier
+      }));
+      baseConditions.$nor = [{ $or: blockConditions }];
+    }
+
+    const posts = await Post.find(baseConditions)
       .sort({ flagTimestamp: -1 })
-      .limit(limit);
+      .limit(limit)
+      .lean(); // Use lean
 
     return {
       items: posts.map((post) => ({
@@ -2180,6 +2301,8 @@ export const getReviewedPostsService = async (limit: number = 10) => {
         content: post.caption || post.title,
         timestamp: post.flagTimestamp,
         post_url: post.post_url,
+        platform: post.platform, // Include platform
+        username: post.username, // Include username
       })),
     };
   } catch (error) {

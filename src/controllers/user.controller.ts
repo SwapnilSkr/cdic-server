@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import * as userService from '../services/user.service';
 import * as auditService from '../services/audit.service';
+import { User } from '../models/user.model';
 
 export const registerUser = async (req: Request, res: Response) => {
   try {
@@ -184,5 +185,129 @@ export const deleteUser = async (req: Request, res: Response) => {
     res.status(400).json({
       message: error.message || 'Failed to delete user'
     });
+  }
+};
+
+export const updateBlockedAccounts = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id; 
+    const { blockedAccounts } = req.body; // Expecting an array of { platform: string, identifier: string }
+
+    if (!userId) {
+      return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    if (!Array.isArray(blockedAccounts)) {
+       return res.status(400).json({ message: 'blockedAccounts must be an array' });
+    }
+
+    // Basic validation for each item in the array
+    for (const account of blockedAccounts) {
+      if (!account || typeof account.platform !== 'string' || typeof account.identifier !== 'string') {
+        return res.status(400).json({ message: 'Each item in blockedAccounts must have a platform and identifier (both strings)' });
+      }
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId, 
+      { $set: { blockedAccounts: blockedAccounts } }, 
+      { new: true } // Return the updated document
+    ).select('-password'); // Exclude password from the returned user object
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    await auditService.createAudit({
+      userId,
+      action: "Blocked Accounts Update",
+      actionType: "profile"
+    });
+
+    res.status(200).json({ 
+      message: 'Blocked accounts updated successfully', 
+      blockedAccounts: updatedUser.blockedAccounts 
+    });
+
+  } catch (error: any) {
+    console.error("Error updating blocked accounts:", error);
+    res.status(500).json({ message: error.message || 'Failed to update blocked accounts' });
+  }
+};
+
+export const getBlockedAccounts = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    const user = await User.findById(userId).select('blockedAccounts').lean();
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.status(200).json({ blockedAccounts: user.blockedAccounts || [] });
+
+  } catch (error: any) {
+    console.error("Error fetching blocked accounts:", error);
+    res.status(500).json({ message: error.message || 'Failed to fetch blocked accounts' });
+  }
+};
+
+export const removeBlockedAccount = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { platform, identifier } = req.body; // Expect platform and identifier in body
+
+    if (!userId) {
+      return res.status(401).json({ message: 'User not authenticated' });
+    }
+
+    if (!platform || !identifier) {
+      return res.status(400).json({ message: 'Platform and identifier are required to remove a block.' });
+    }
+
+    // Use $pull to remove the matching element from the array
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { 
+        $pull: { 
+          blockedAccounts: { platform: platform, identifier: identifier } 
+        } 
+      },
+      { new: true } // Return the updated document
+    ).select('blockedAccounts -password'); // Return only the updated list, exclude password
+
+    if (!updatedUser) {
+      // This could mean user not found, or the account wasn't in the list
+      // Check if user exists to differentiate
+      const userExists = await User.exists({ _id: userId });
+      if (!userExists) {
+          return res.status(404).json({ message: 'User not found' });
+      }
+      // If user exists, it means the account wasn't blocked, which is fine
+      // Optionally return the current list if the specified account wasn't found
+      const currentUser = await User.findById(userId).select('blockedAccounts -password').lean();
+       return res.status(200).json({ 
+        message: 'Account was not found in the blocklist.', 
+        blockedAccounts: currentUser?.blockedAccounts || []
+      });
+    }
+
+    await auditService.createAudit({
+      userId,
+      action: "Blocked Account Removed",
+      actionType: "profile"
+    });
+
+    res.status(200).json({ 
+      message: 'Blocked account removed successfully', 
+      blockedAccounts: updatedUser.blockedAccounts 
+    });
+
+  } catch (error: any) {
+    console.error("Error removing blocked account:", error);
+    res.status(500).json({ message: error.message || 'Failed to remove blocked account' });
   }
 }; 
