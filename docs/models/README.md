@@ -10,6 +10,7 @@ This section describes the Mongoose data models used in the application to inter
 -   [Post](./post_model.md): Represents individual pieces of content (e.g., social media posts, articles) collected by the system.
 -   [Topic](./topic_model.md): Represents specific subjects or themes tracked within the content.
 -   [Audit](./audit_model.md): Records actions performed within the system for auditing purposes.
+-   [Comment](./comment_model.md): Represents user comments on posts, often for review purposes.
 
 ## Model Relationship Diagram (Simplified)
 

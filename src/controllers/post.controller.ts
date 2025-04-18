@@ -21,6 +21,10 @@ import {
   extractKeywordsFromBooleanQuery,
   filterPostsByBooleanQuery,
   addFieldToPosts,
+  addCommentToPost,
+  getCommentsForPost,
+  updateComment,
+  deleteComment,
 } from "../services/post.service";
 import { createTopic, updateTopic } from "../services/topic.service";
 import { Topic } from "../models/topic.model";
@@ -721,9 +725,127 @@ export const addFieldToPostsController = async (
 ): Promise<void> => {
   try {
     await addFieldToPosts();
-    res.status(200).json({ message: "Field added to posts successfully" });
+    res.status(200).json({
+      message: "Field added successfully",
+    });
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+// ========================================
+// Comment Controllers
+// ========================================
+
+export const createPostComment = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { postId } = req.params;
+    const { content, parentId } = req.body;
+    const userId = req.user?.id; // Assuming authenticateToken middleware adds user to req
+
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    if (!content) {
+      res.status(400).json({ error: "Comment content is required." });
+      return;
+    }
+
+    const comment = await addCommentToPost(postId, userId, content, parentId || null);
+    res.status(201).json(comment);
+
+  } catch (error: any) {
+    console.error("API Error adding comment:", error);
+    if (error.message.includes("not found")) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes("Invalid")) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: "Failed to add comment." });
+    }
+  }
+};
+
+export const getPostComments = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { postId } = req.params;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+
+    // Optional: Check if post exists before fetching comments
+    // const postExists = await Post.exists({ _id: postId });
+    // if (!postExists) {
+    //   res.status(404).json({ error: "Post not found." });
+    //   return;
+    // }
+
+    const result = await getCommentsForPost(postId, page, limit);
+    res.status(200).json(result);
+
+  } catch (error: any) {
+    console.error("API Error fetching comments:", error);
+    if (error.message.includes("Invalid")) {
+        res.status(400).json({ error: error.message });
+    } else {
+        res.status(500).json({ error: "Failed to fetch comments." });
+    }
+  }
+};
+
+export const updatePostComment = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { postId, commentId } = req.params; // postId might not be strictly needed but good for route structure
+    const { content } = req.body;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    if (!content) {
+      res.status(400).json({ error: "Comment content is required." });
+      return;
+    }
+
+    const updatedComment = await updateComment(commentId, userId, content);
+    res.status(200).json(updatedComment);
+
+  } catch (error: any) {
+    console.error("API Error updating comment:", error);
+    if (error.message.includes("not found")) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes("Invalid") || error.message.includes("Unauthorized")) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: "Failed to update comment." });
+    }
+  }
+};
+
+export const deletePostComment = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { postId, commentId } = req.params; // postId might not be strictly needed
+    const userId = req.user?.id;
+
+    if (!userId) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+
+    const result = await deleteComment(commentId, userId);
+    res.status(200).json(result);
+
+  } catch (error: any) {
+    console.error("API Error deleting comment:", error);
+    if (error.message.includes("not found")) {
+      res.status(404).json({ error: error.message });
+    } else if (error.message.includes("Invalid") || error.message.includes("Unauthorized")) {
+      res.status(400).json({ error: error.message });
+    } else {
+      res.status(500).json({ error: "Failed to delete comment." });
+    }
   }
 };
 

@@ -17,6 +17,10 @@ import {
   fetchPostByUrl,
   testBooleanQuery,
   addFieldToPostsController,
+  createPostComment,
+  getPostComments,
+  updatePostComment,
+  deletePostComment,
 } from "../controllers/post.controller";
 import { authenticateToken } from "../middlewares/auth.middleware";
 
@@ -39,5 +43,11 @@ router.post("/dismiss/:postId", authenticateToken, dismissPost);
 router.get("/test-query", testBooleanQuery);
 router.put("/:postId/status", authenticateToken, updatePostStatus);
 router.get("/:postId", authenticateToken, getPostDetails);
+
+// Comment Routes (nested under posts)
+router.post("/:postId/comments", authenticateToken, createPostComment);
+router.get("/:postId/comments", authenticateToken, getPostComments);
+router.put("/:postId/comments/:commentId", authenticateToken, updatePostComment);
+router.delete("/:postId/comments/:commentId", authenticateToken, deletePostComment);
 
 export default router;

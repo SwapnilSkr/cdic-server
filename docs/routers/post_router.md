@@ -73,4 +73,23 @@ Handles routes related to fetching, managing, and retrieving posts.
 -   **`GET /:postId`**
     -   **Middleware:** `authenticateToken`
     -   **Controller:** `getPostDetails` (`post.controller.ts`)
-    -   **Description:** Retrieves detailed information for a single post. 
+    -   **Description:** Retrieves detailed information for a single post.
+
+### Post Comments
+
+-   **`POST /:postId/comments`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `createPostComment` (`post.controller.ts`)
+    -   **Description:** Adds a new comment to the specified post.
+-   **`GET /:postId/comments`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `getPostComments` (`post.controller.ts`)
+    -   **Description:** Retrieves comments for the specified post (paginated).
+-   **`PUT /:postId/comments/:commentId`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `updatePostComment` (`post.controller.ts`)
+    -   **Description:** Updates an existing comment on the specified post.
+-   **`DELETE /:postId/comments/:commentId`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `deletePostComment` (`post.controller.ts`)
+    -   **Description:** Deletes an existing comment on the specified post. 
