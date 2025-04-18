@@ -37,6 +37,10 @@ This document provides a summary of the available API endpoints, grouped by reso
 -   `GET /:postId` [Auth]: Get details for a single post.
 -   `POST /fetch-all-topics` [Auth]: Trigger background job to fetch posts for all active topics.
 -   *(Admin/Utility Endpoints omitted for brevity: `/add-field`, `/rename-platform`, `/test-reddit`, `/test-query`)*
+-   `POST /:postId/comments` [Auth]: Add a comment to a post.
+-   `GET /:postId/comments` [Auth]: Get comments for a post (paginated).
+-   `PUT /:postId/comments/:commentId` [Auth]: Update a specific comment.
+-   `DELETE /:postId/comments/:commentId` [Auth]: Delete a specific comment.
 
 ## Topics (`/topics`)
 

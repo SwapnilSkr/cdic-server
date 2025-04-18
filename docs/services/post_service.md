@@ -35,6 +35,12 @@ This is a comprehensive service responsible for fetching, storing, retrieving, a
     -   Creating necessary database indexes for the `Post` collection (`createPostIndexes`).
     -   Data migration/cleanup functions (e.g., `renamePlatformGoogleNewsToNews`, `deleteAuthorsWithoutPosts`, `addFieldToPosts`).
 
+-   **Comment Management:**
+    -   Adding a new comment to a post, handling user mentions (`addCommentToPost`).
+    -   Retrieving comments for a specific post with pagination and populated user details (`getCommentsForPost`).
+    -   Updating an existing comment (author only) (`updateComment`).
+    -   Deleting a comment (author only) (`deleteComment`).
+
 ## Core Fetching Functions (Platform Specific)
 
 -   `fetchAndStoreInstagramPosts(keyword, topicId)`: Fetches Instagram posts via HikerAPI v2 search.

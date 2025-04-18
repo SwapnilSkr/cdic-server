@@ -71,6 +71,29 @@ Handles a wide variety of HTTP requests related to posts, including fetching, ma
     -   **Description:** Initiates the background task to fetch posts for all active topics.
     -   **Logic:** Calls `cron.service.fetchAllTopics` asynchronously (fire and forget). Responds immediately with a 200 status indicating the process has started.
 
+### Comment Functions
+
+-   **`createPostComment(req: Request, res: Response)`**
+    -   **Route:** `POST /api/posts/:postId/comments`
+    -   **Middleware:** `authenticateToken`
+    -   **Description:** Adds a new comment to a specific post.
+    -   **Logic:** Extracts `postId` from params, `content` and `parentId` (optional) from body, and `userId` from `req.user`. Calls `post.service.addCommentToPost`. Responds with the created comment (populated with user info).
+-   **`getPostComments(req: Request, res: Response)`**
+    -   **Route:** `GET /api/posts/:postId/comments`
+    -   **Middleware:** `authenticateToken`
+    -   **Description:** Retrieves comments for a specific post, with pagination.
+    -   **Logic:** Extracts `postId` from params, `page` and `limit` from query. Calls `post.service.getCommentsForPost`. Responds with the comments and pagination info.
+-   **`updatePostComment(req: Request, res: Response)`**
+    -   **Route:** `PUT /api/posts/:postId/comments/:commentId`
+    -   **Middleware:** `authenticateToken`
+    -   **Description:** Updates an existing comment. Only the comment author can update.
+    -   **Logic:** Extracts `postId` and `commentId` from params, `content` from body, and `userId` from `req.user`. Calls `post.service.updateComment`. Responds with the updated comment.
+-   **`deletePostComment(req: Request, res: Response)`**
+    -   **Route:** `DELETE /api/posts/:postId/comments/:commentId`
+    -   **Middleware:** `authenticateToken`
+    -   **Description:** Deletes an existing comment. Only the comment author can delete.
+    -   **Logic:** Extracts `postId` and `commentId` from params, and `userId` from `req.user`. Calls `post.service.deleteComment`. Responds with a success message.
+
 ### Utility / Admin Functions
 
 -   **`renamePlatformController(req: Request, res: Response)`**

@@ -10,6 +10,8 @@ import mongoose from "mongoose";
 import { IUser } from "../models/user.model";
 import { TopicModel, Topic } from "../models/topic.model";
 import { getJson } from "serpapi";
+import Comment, { IComment } from "../models/comment.model"; // Import the Comment model
+import { User } from "../models/user.model"; // Make sure User is imported
 
 const MAX_POSTS = 200;
 
@@ -2603,5 +2605,274 @@ export const addFieldToPosts = async (): Promise<void> => {
     console.error("❌ Error adding field to posts:", error);
     throw error;
   }
+};
+
+// ========================================
+// Comment Functionality
+// ========================================
+
+// Helper function to parse mentions and find user IDs
+const getMentionedUserIds = async (content: string): Promise<mongoose.Types.ObjectId[]> => {
+  const mentionRegex = /@(\w+)/g;
+  const mentions = content.match(mentionRegex);
+  const mentionedUserIds: mongoose.Types.ObjectId[] = [];
+
+  if (mentions) {
+    const usernames = mentions.map(mention => mention.substring(1)); // Remove '@'
+    if (usernames.length > 0) {
+        // Find users whose 'name' matches the mentioned usernames (adjust field if needed)
+        // It's generally better to mention by a unique username if available
+        const users = await User.find({ name: { $in: usernames } }, '_id');
+        users.forEach(user => {
+            if (user._id instanceof mongoose.Types.ObjectId) {
+                mentionedUserIds.push(user._id);
+            } else {
+                console.warn(`⚠️ Skipping user with invalid ObjectId: ${user._id}`);
+            }
+        });
+    }
+  }
+  return mentionedUserIds;
+};
+
+/**
+ * Adds a comment to a specific post.
+ * @param postId - The ID of the post to comment on.
+ * @param userId - The ID of the user making the comment.
+ * @param content - The text content of the comment.
+ * @param parentId - Optional ID of the parent comment if this is a reply.
+ * @returns The newly created comment, populated with user details.
+ */
+export const addCommentToPost = async (
+  postId: string,
+  userId: string,
+  content: string,
+  parentId: string | null = null
+) => {
+  try {
+    // Validate inputs
+    if (!mongoose.Types.ObjectId.isValid(postId) || !mongoose.Types.ObjectId.isValid(userId)) {
+        throw new Error("Invalid Post or User ID.");
+    }
+    if (parentId && !mongoose.Types.ObjectId.isValid(parentId)) {
+        throw new Error("Invalid Parent Comment ID.");
+    }
+    if (!content || content.trim().length === 0) {
+        throw new Error("Comment content cannot be empty.");
+    }
+
+    // Check if the post exists
+    const post = await Post.findById(postId);
+    if (!post) {
+      throw new Error("Post not found.");
+    }
+    
+    // Check if the user exists
+    const user = await User.findById(userId);
+    if (!user) {
+        throw new Error("User not found.");
+    }
+    
+    // Check if parent comment exists (if provided)
+    if (parentId) {
+        const parentComment = await Comment.findById(parentId);
+        if (!parentComment) {
+            throw new Error("Parent comment not found.");
+        }
+        // Ensure parent comment belongs to the same post
+        if (!parentComment.postId.equals(postId)) {
+            throw new Error("Parent comment does not belong to the specified post.");
+        }
+    }
+
+    // Parse content for mentions
+    const mentionedUserIds = await getMentionedUserIds(content);
+
+    // Create the new comment
+    const newComment = new Comment({
+      postId: new mongoose.Types.ObjectId(postId),
+      userId: new mongoose.Types.ObjectId(userId),
+      content: content.trim(),
+      mentions: mentionedUserIds,
+      parentId: parentId ? new mongoose.Types.ObjectId(parentId) : null,
+    });
+
+    await newComment.save();
+
+    // Populate user details before returning
+    // Use .lean() for plain JS objects if full Mongoose documents aren't needed downstream
+    const populatedComment = await Comment.findById(newComment._id)
+        .populate<{ userId: Pick<IUser, 'name' | 'email'> }>(
+            { path: 'userId', select: 'name email' }
+        )
+        .populate<{ mentions: Pick<IUser, 'name' | 'email'>[] }>(
+            { path: 'mentions', select: 'name email' }
+        )
+        .lean(); // Use lean() to get plain objects, often simpler for response
+
+    if (!populatedComment) {
+        // Should ideally not happen, but handle defensively
+        throw new Error("Failed to retrieve populated comment after creation.");
+    }
+
+    // Return the plain JS object result from lean()
+    return populatedComment;
+
+  } catch (error: any) {
+    console.error("❌ Error adding comment:", error);
+    throw new Error(`Failed to add comment: ${error.message}`);
+  }
+};
+
+/**
+ * Retrieves comments for a specific post with pagination.
+ * @param postId - The ID of the post.
+ * @param page - The page number for pagination (default: 1).
+ * @param limit - The number of comments per page (default: 10).
+ * @returns An object containing the comments and pagination details.
+ */
+export const getCommentsForPost = async (
+    postId: string,
+    page: number = 1,
+    limit: number = 10
+) => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(postId)) {
+            throw new Error("Invalid Post ID.");
+        }
+
+        const skip = (page - 1) * limit;
+
+        const comments = await Comment.find({ postId: new mongoose.Types.ObjectId(postId) })
+            .sort({ createdAt: -1 }) // Show newest comments first
+            .skip(skip)
+            .limit(limit)
+            .populate<{ userId: Pick<IUser, 'name' | 'email'> }>(
+                { path: 'userId', select: 'name email' }
+            )
+            .populate<{ mentions: Pick<IUser, 'name' | 'email'>[] }>(
+                { path: 'mentions', select: 'name email' }
+            )
+            .lean(); // Use lean() here as well
+
+        const totalComments = await Comment.countDocuments({ postId: new mongoose.Types.ObjectId(postId) });
+        const totalPages = Math.ceil(totalComments / limit);
+
+        return {
+            comments,
+            pagination: {
+                currentPage: page,
+                totalPages,
+                totalItems: totalComments,
+                itemsPerPage: limit
+            }
+        };
+    } catch (error: any) {
+        console.error("❌ Error fetching comments:", error);
+        throw new Error(`Failed to fetch comments: ${error.message}`);
+    }
+};
+
+/**
+ * Updates an existing comment.
+ * @param commentId - The ID of the comment to update.
+ * @param userId - The ID of the user attempting the update (must be the author).
+ * @param content - The new content for the comment.
+ * @returns The updated comment, populated with user details.
+ */
+export const updateComment = async (
+    commentId: string,
+    userId: string,
+    content: string
+) => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(commentId) || !mongoose.Types.ObjectId.isValid(userId)) {
+            throw new Error("Invalid Comment or User ID.");
+        }
+        if (!content || content.trim().length === 0) {
+            throw new Error("Comment content cannot be empty.");
+        }
+
+        const comment = await Comment.findById(commentId);
+
+        if (!comment) {
+            throw new Error("Comment not found.");
+        }
+
+        // Authorization check: Only the author can update their comment
+        if (!comment.userId.equals(new mongoose.Types.ObjectId(userId))) { // Cast userId to ObjectId for comparison
+            throw new Error("Unauthorized: You can only update your own comments.");
+        }
+
+        // Parse new content for mentions
+        const mentionedUserIds = await getMentionedUserIds(content);
+
+        // Update the comment
+        comment.content = content.trim();
+        comment.mentions = mentionedUserIds;
+        await comment.save();
+
+        // Populate and return the updated comment
+        const populatedComment = await Comment.findById(comment._id)
+            .populate<{ userId: Pick<IUser, 'name' | 'email'> }>(
+                { path: 'userId', select: 'name email' }
+            )
+            .populate<{ mentions: Pick<IUser, 'name' | 'email'>[] }>(
+                { path: 'mentions', select: 'name email' }
+            )
+            .lean();
+        
+        if (!populatedComment) {
+            throw new Error("Failed to retrieve populated comment after update.");
+        }
+
+        // Return the plain JS object result from lean()
+        return populatedComment;
+
+    } catch (error: any) {
+        console.error("❌ Error updating comment:", error);
+        throw new Error(`Failed to update comment: ${error.message}`);
+    }
+};
+
+/**
+ * Deletes a comment.
+ * @param commentId - The ID of the comment to delete.
+ * @param userId - The ID of the user attempting the deletion (must be the author).
+ * @returns An object indicating success.
+ */
+export const deleteComment = async (
+    commentId: string,
+    userId: string
+): Promise<{ success: boolean; message: string }> => {
+    try {
+        if (!mongoose.Types.ObjectId.isValid(commentId) || !mongoose.Types.ObjectId.isValid(userId)) {
+            throw new Error("Invalid Comment or User ID.");
+        }
+
+        const comment = await Comment.findById(commentId);
+
+        if (!comment) {
+            throw new Error("Comment not found.");
+        }
+
+        // Authorization check: Only the author can delete their comment
+        // Convert string userId to ObjectId for comparison
+        const userObjectId = new mongoose.Types.ObjectId(userId);
+        if (!comment.userId.equals(userObjectId)) {
+            throw new Error("Unauthorized: You can only delete your own comments.");
+        }
+
+        // Delete the comment
+        await Comment.findByIdAndDelete(commentId);
+
+        // TODO: Handle deletion of replies if necessary (cascade delete or mark as deleted)
+
+        return { success: true, message: "Comment deleted successfully." };
+
+    } catch (error: any) {
+        console.error("❌ Error deleting comment:", error);
+        throw new Error(`Failed to delete comment: ${error.message}`);
+    }
 };
 
