@@ -28,6 +28,21 @@ Handles routes related to user authentication, profile management, and administr
     -   **Controller:** `updateUserPassword` (`user.controller.ts`)
     -   **Description:** Updates the password for the authenticated user (requires current password).
 
+#### Blocked Accounts Management
+
+-   **`GET /me/blocked-accounts`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `getBlockedAccounts` (`user.controller.ts`)
+    -   **Description:** Retrieves the list of accounts currently blocked by the authenticated user.
+-   **`PUT /me/blocked-accounts`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `updateBlockedAccounts` (`user.controller.ts`)
+    -   **Description:** Replaces the entire list of accounts blocked by the authenticated user. Expects a request body with a `blockedAccounts` array, where each element is an object `{ platform: string, identifier: string }`.
+-   **`DELETE /me/blocked-accounts`**
+    -   **Middleware:** `authenticateToken`
+    -   **Controller:** `removeBlockedAccount` (`user.controller.ts`)
+    -   **Description:** Removes a specific account from the authenticated user's blocklist. Expects a request body with `{ platform: string, identifier: string }` of the account to unblock.
+
 ### Admin-Only Routes (Require Authentication + Admin Role)
 
 -   **`GET /all`**

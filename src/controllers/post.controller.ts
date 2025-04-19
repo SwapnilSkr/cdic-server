@@ -383,6 +383,11 @@ export const getFlaggedPosts = async (
   res: Response
 ): Promise<void> => {
   try {
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "User not authenticated" });
+      return;
+    }
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     const dateRange = req.query.dateRange
@@ -395,7 +400,7 @@ export const getFlaggedPosts = async (
       status,
       page,
       limit,
-    });
+    }, userId);
 
     res.status(200).json(result);
   } catch (error) {
@@ -427,7 +432,12 @@ export const getTodayMostDiscussedFeed = async (
   res: Response
 ): Promise<void> => {
   try {
-    const feed = await getTodayMostDiscussedFeedWithTopics();
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "User not authenticated" });
+      return;
+    }
+    const feed = await getTodayMostDiscussedFeedWithTopics(userId);
     res.status(200).json(feed);
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });
@@ -439,7 +449,13 @@ export const getReviewedPosts = async (
   res: Response
 ): Promise<void> => {
   try {
-    const posts = await getReviewedPostsService(10);
+    const userId = req.user?.id;
+    if (!userId) {
+      res.status(401).json({ error: "User not authenticated" });
+      return;
+    }
+    const limit = parseInt(req.query.limit as string) || 10;
+    const posts = await getReviewedPostsService(userId, limit);
     res.status(200).json(posts);
   } catch (error) {
     res.status(500).json({ error: "Internal server error" });

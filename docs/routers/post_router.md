@@ -17,11 +17,11 @@ Handles routes related to fetching, managing, and retrieving posts.
 -   **`GET /all`**
     -   **Middleware:** `authenticateToken`
     -   **Controller:** `getAllStoredPosts` (`post.controller.ts`)
-    -   **Description:** Retrieves a paginated list of all stored posts, potentially with filters applied via query parameters.
+    -   **Description:** Retrieves a paginated list of all stored posts, potentially with filters applied via query parameters. Posts from accounts blocked by the authenticated user are filtered out.
 -   **`GET /flagged`**
     -   **Middleware:** `authenticateToken`
     -   **Controller:** `getFlaggedPosts` (`post.controller.ts`)
-    -   **Description:** Retrieves a list of posts marked as flagged, potentially with filters.
+    -   **Description:** Retrieves a list of posts marked as flagged, potentially with filters. Posts from accounts blocked by the authenticated user are filtered out.
 -   **`POST /toggle-flag/:postId`**
     -   **Middleware:** `authenticateToken`
     -   **Controller:** `togglePostFlag` (`post.controller.ts`)
@@ -37,11 +37,11 @@ Handles routes related to fetching, managing, and retrieving posts.
 -   **`GET /today-discussed`**
     -   **Middleware:** `authenticateToken`
     -   **Controller:** `getTodayMostDiscussedFeed` (`post.controller.ts`)
-    -   **Description:** Retrieves a feed of the most discussed posts created today.
+    -   **Description:** Retrieves a feed of the most discussed posts created today. Posts from accounts blocked by the authenticated user are filtered out.
 -   **`GET /reviewed`**
     -   **Middleware:** `authenticateToken`
     -   **Controller:** `getReviewedPosts` (`post.controller.ts`)
-    -   **Description:** Retrieves posts that have been marked with a reviewed status.
+    -   **Description:** Retrieves posts that have been marked with a reviewed status. Posts from accounts blocked by the authenticated user are filtered out.
 -   **`POST /add-field`**
     -   **Middleware:** None
     -   **Controller:** `addFieldToPostsController` (`post.controller.ts`)

@@ -11,6 +11,7 @@ export interface IUser extends Document {
   password: string;
   name: string;
   role: UserRole;
+  blockedAccounts: { platform: string, identifier: string }[];
   comparePassword(candidatePassword: string): Promise<boolean>;
 }
 
@@ -18,7 +19,14 @@ const userSchema = new Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
   name: { type: String, required: true },
-  role: { type: String, enum: Object.values(UserRole), default: UserRole.MEMBER }
+  role: { type: String, enum: Object.values(UserRole), default: UserRole.MEMBER },
+  blockedAccounts: { 
+    type: [{ 
+      platform: { type: String, required: true },
+      identifier: { type: String, required: true }
+    }], 
+    default: [] 
+  }
 }, { timestamps: true });
 
 userSchema.pre('save', async function(next) {
