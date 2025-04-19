@@ -17,6 +17,91 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Fetches trending topics based on internal Post engagement data,
+// optionally filtering by keywords mentioned in post content.
+async function fetchTrendingTopics(searchKeywords?: string): Promise<any> {
+  console.log(`Fetching trending posts from database. Keyword filter: ${searchKeywords || 'None'}`);
+
+  try {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    // Base aggregation pipeline stages
+    const pipeline: any[] = [
+      {
+        $match: {
+          created_at: { $gte: sevenDaysAgo },
+        },
+      },
+    ];
+
+    // Add keyword filter if provided
+    if (searchKeywords) {
+      const keywordsRegex = new RegExp(searchKeywords.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i'); // Escape regex special chars, case-insensitive
+      pipeline.push({
+        $match: {
+          $or: [
+            { caption: { $regex: keywordsRegex } },
+            { title: { $regex: keywordsRegex } },
+          ],
+        },
+      });
+    }
+
+    // Add remaining stages: calculate score, sort, limit
+    pipeline.push(
+      {
+        $addFields: {
+          engagementScore: { $add: ["$likesCount", "$commentsCount"] },
+        },
+      },
+      {
+        $sort: { engagementScore: -1 },
+      },
+      {
+        $limit: 5,
+      }
+    );
+
+    const trendingPosts = await Post.aggregate(pipeline);
+
+    const summaryKeywordText = searchKeywords ? `mentioning "${searchKeywords}"` : "from the feed";
+    const resultSummary = `Here are the top ${trendingPosts.length} most engaged posts ${summaryKeywordText} in the last 7 days.`;
+    const noResultSummary = `I couldn't find any trending posts ${summaryKeywordText} from the last 7 days.`;
+
+    if (!trendingPosts || trendingPosts.length === 0) {
+      return {
+        type: "trending_topics",
+        data: [],
+        summary: noResultSummary
+      };
+    }
+
+    const formattedData = trendingPosts.map((post) => ({
+      title: post.caption || post.title || "Untitled Post",
+      description: `Platform: ${post.platform}, Likes: ${post.likesCount}, Comments: ${post.commentsCount}`, // Example description
+      source: post.platform,
+      postId: post.post_id,
+      postUrl: post.post_url,
+    }));
+
+    return {
+      type: "trending_topics", // Keep type consistent for downstream formatting
+      data: formattedData,
+      summary: resultSummary
+    };
+
+  } catch (error) {
+    console.error("Error fetching trending posts from database:", error);
+    const errorSummaryKeywordText = searchKeywords ? `mentioning "${searchKeywords}"` : "";
+    return {
+      type: "trending_topics",
+      data: [],
+      summary: `Sorry, I encountered an error trying to fetch trending posts ${errorSummaryKeywordText}.`
+    };
+  }
+}
+
 const APP_CONTEXT = `You are a helpful assistant for the Verideck dashboard application.
 It is a platform that allows users to monitor and fact-check media across multiple channels.
 You can help users with:
@@ -330,8 +415,10 @@ export const generateResponse = async (
       typeof latestMessage.content === "string"
     ) {
       console.log("Analyzing user message for potential database queries...");
+      const userQuery = latestMessage.content;
+      const lowerCaseQuery = userQuery.toLowerCase();
 
-      const isDbQuery = await isDataBaseRelatedQuery(latestMessage.content);
+      const isDbQuery = await isDataBaseRelatedQuery(userQuery);
 
       if (isDbQuery) {
         console.log(
@@ -339,13 +426,22 @@ export const generateResponse = async (
         );
 
         try {
-          // First, check if the query is related to platform statistics
-          if (
-            latestMessage.content.toLowerCase().includes("platform") &&
-            (latestMessage.content.toLowerCase().includes("stat") ||
-              latestMessage.content.toLowerCase().includes("metrics") ||
-              latestMessage.content.toLowerCase().includes("distribution"))
+          // Check for specific query types first
+          let searchKeywords: string | undefined = undefined;
+          const trendingMatch = userQuery.match(/trending (?:posts?|topics?|content) (?:about|on|regarding|related to)\s+(.+)/i);
+
+          if (trendingMatch && trendingMatch[1]) {
+              searchKeywords = trendingMatch[1].trim();
+              console.log(`Detected trending content query with keywords: "${searchKeywords}"`);
+              searchResults = await fetchTrendingTopics(searchKeywords); // Pass keywords
+          }
+          else if (
+            lowerCaseQuery.includes("platform") &&
+            (lowerCaseQuery.includes("stat") ||
+              lowerCaseQuery.includes("metrics") ||
+              lowerCaseQuery.includes("distribution"))
           ) {
+            console.log("Detected platform statistics query.");
             const stats = await getPlatformStatistics();
             searchResults = {
               type: "stats",
@@ -354,40 +450,59 @@ export const generateResponse = async (
                 "Here are the platform statistics across our monitoring system.",
             };
           }
-          // Next, check if it's specifically about an author
+          // Check for trending topics query
+          else if (lowerCaseQuery.includes("trending topic")) {
+            console.log("Detected trending topics query.");
+            // Attempt to extract location (simple regex example)
+            const locationMatch = userQuery.match(/in\s+([\w\s]+)/i);
+            const location = locationMatch ? locationMatch[1].trim() : undefined;
+            searchResults = await fetchTrendingTopics(location);
+          }
+          // Check for author query
           else if (
-            latestMessage.content.toLowerCase().includes("author") ||
-            latestMessage.content.toLowerCase().includes("account") ||
-            latestMessage.content.toLowerCase().includes("creator") ||
-            latestMessage.content.toLowerCase().includes("handle")
+            lowerCaseQuery.includes("author") ||
+            lowerCaseQuery.includes("account") ||
+            lowerCaseQuery.includes("creator") ||
+            lowerCaseQuery.includes("handle")
           ) {
-            searchResults = await intelligentSearch(latestMessage.content, 5, last5Messages);
-
-            // If no author results found, this will fall through to the next check
+            console.log("Detected author query.");
+            searchResults = await intelligentSearch(userQuery, 5, last5Messages);
+            // Fall through if no author results
             if (
-              searchResults.type !== "author" ||
-              searchResults.data.length === 0
+              !searchResults || searchResults.type !== "author" ||
+              !searchResults.data || searchResults.data.length === 0
             ) {
-              searchResults = null;
+              console.log("Author search returned no specific results, falling back.");
+              searchResults = null; // Reset to potentially try generic search or fetchDatabaseInfo
             }
           }
-          // Otherwise try generic intelligent search
-          else {
-            searchResults = await intelligentSearch(latestMessage.content, 5, last5Messages);
+          // Check for generic trending request (without specific keywords)
+          else if (lowerCaseQuery.includes("trending topic") || lowerCaseQuery.includes("what's trending")) {
+             console.log("Detected generic trending query (no keywords).");
+             searchResults = await fetchTrendingTopics(); // Call without keywords
           }
 
+          // If no specific type matched or specific search failed, try generic intelligent search
+          if (!searchResults) {
+             console.log("Attempting generic intelligent search.");
+             searchResults = await intelligentSearch(userQuery, 5, last5Messages);
+          }
+
+
+          // Format search results into dbInfo
           if (
             searchResults &&
             searchResults.data &&
             searchResults.data.length > 0
           ) {
             console.log(
-              `Found ${searchResults.data.length} specific results for the query`
+              `Found ${searchResults.data.length} results of type '${searchResults.type}'`
             );
 
-            dbInfo = `Search Results for "${latestMessage.content}":\n\n`;
+            dbInfo = `Search Results for "${userQuery}":\n\n`;
             dbInfo += `${searchResults.summary}\n\n`;
 
+            // Existing formatting for post, topic, incident
             if (
               searchResults.type === "post" ||
               searchResults.type === "topic" ||
@@ -411,7 +526,9 @@ export const generateResponse = async (
                   }"\n`;
                   dbInfo += `   Engagement: ${engagement} interactions\n\n`;
                 });
-            } else if (searchResults.type === "author") {
+            }
+            // Existing formatting for author
+            else if (searchResults.type === "author") {
               dbInfo += "Creator Information:\n";
               searchResults.data
                 .slice(0, 3)
@@ -447,15 +564,16 @@ export const generateResponse = async (
                         dbInfo += `        Platform: ${
                           post.platform
                         }, Engagement: ${
-                          post.engagement.likes + post.engagement.comments
+                          (post.engagement?.likes || 0) + (post.engagement?.comments || 0)
                         }\n`;
                       });
                   }
                   dbInfo += `\n`;
                 });
-            } else if (searchResults.type === "stats") {
+            }
+            // Existing formatting for stats
+            else if (searchResults.type === "stats") {
               const stats = searchResults.data[0];
-
               dbInfo += "Platform Statistics Overview:\n";
               dbInfo += `- Total Content: ${stats.totals.postCount.toLocaleString()} posts\n`;
               dbInfo += `- Total Creators: ${stats.totals.authorCount.toLocaleString()} authors\n`;
@@ -570,35 +688,57 @@ export const generateResponse = async (
               }
 
               if (stats.platformHealth && stats.platformHealth.length > 0) {
-                dbInfo += "\nPlatform Health Metrics:\n";
-                stats.platformHealth.forEach(
+                 dbInfo += "\nPlatform Health Metrics:\n";
+                 stats.platformHealth.forEach(
                   (platform: {
                     platform: any;
                     postToAuthorRatio: any;
                     avgPostEngagement: any;
                   }) => {
-                    if (platform.platform) {
-                      dbInfo += `- ${platform.platform}: `;
-                      dbInfo += `${(platform.postToAuthorRatio || 0).toFixed(
-                        1
-                      )} posts per creator | `;
-                      dbInfo += `${Math.round(
-                        platform.avgPostEngagement || 0
-                      ).toLocaleString()} engagement per post\n`;
-                    }
-                  }
-                );
+                     if (platform.platform) {
+                       dbInfo += `- ${platform.platform}: `;
+                       dbInfo += `${(platform.postToAuthorRatio || 0).toFixed(
+                         1
+                       )} posts per creator | `;
+                       dbInfo += `${Math.round(
+                         platform.avgPostEngagement || 0
+                       ).toLocaleString()} engagement per post\n`;
+                     }
+                   }
+                 );
               }
             }
-          } else {
+             // Add formatting for trending_topics
+            else if (searchResults.type === "trending_topics") {
+              dbInfo += "Trending Topics:\n";
+              searchResults.data.forEach((topic: any, index: number) => {
+                dbInfo += `${index + 1}. ${topic.title}\n`;
+                if (topic.description) {
+                  dbInfo += `   Description: ${topic.description}\n`;
+                }
+                if (topic.source) {
+                   dbInfo += `   Source: ${topic.source}\n`;
+                }
+                dbInfo += `\n`;
+              });
+            }
+          }
+          // Fallback if no specific results found by any method
+          else {
             console.log(
-              "No specific content results found, falling back to general statistics"
+              "No specific content results found, falling back to general fetchDatabaseInfo"
             );
-            dbInfo = await fetchDatabaseInfo(latestMessage.content);
+            dbInfo = await fetchDatabaseInfo(userQuery);
           }
         } catch (searchError) {
-          console.error("Error during intelligent search:", searchError);
-          dbInfo = await fetchDatabaseInfo(latestMessage.content);
+          console.error("Error during search/data fetching:", searchError);
+          // Attempt fallback to fetchDatabaseInfo on error
+          try {
+             dbInfo = await fetchDatabaseInfo(userQuery);
+          } catch (fallbackError) {
+             console.error("Error during fallback fetchDatabaseInfo:", fallbackError);
+             dbInfo = "I encountered an error trying to fetch information for your query.";
+          }
         }
 
         if (dbInfo) {

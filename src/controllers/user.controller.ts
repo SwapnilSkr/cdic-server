@@ -277,7 +277,7 @@ export const removeBlockedAccount = async (req: Request, res: Response) => {
         } 
       },
       { new: true } // Return the updated document
-    ).select('blockedAccounts'); // Only include the blockedAccounts field
+    ).select('blockedAccounts -password'); // Return only the updated list, exclude password
 
     if (!updatedUser) {
       // This could mean user not found, or the account wasn't in the list
@@ -288,7 +288,7 @@ export const removeBlockedAccount = async (req: Request, res: Response) => {
       }
       // If user exists, it means the account wasn't blocked, which is fine
       // Optionally return the current list if the specified account wasn't found
-      const currentUser = await User.findById(userId).select('blockedAccounts').lean();
+      const currentUser = await User.findById(userId).select('blockedAccounts -password').lean();
        return res.status(200).json({ 
         message: 'Account was not found in the blocklist.', 
         blockedAccounts: currentUser?.blockedAccounts || []
